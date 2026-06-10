@@ -176,20 +176,24 @@ func (m *Model) actRenameSession() tea.Cmd {
 	return nil
 }
 
-// actPickSession opens a picker over every session. Items snapshot the
-// (name, index) pairs at open-time; the onPick callback re-validates the
-// index because sessions can vanish via tab/pane cascade while the picker
-// is up (a notice or ptyReadMsg can still mutate state from under us).
+// actPickSession opens a picker over every session. Items carry the
+// *Session pointer, not its index — sessions can vanish via tab/pane
+// cascade while the picker is up (a ptyReadMsg can still mutate state from
+// under us), which shifts indices; the pointer is resolved back to its
+// current position at commit time, and a vanished session is a no-op.
 func (m *Model) actPickSession() tea.Cmd {
 	items := make([]PickerItem, len(m.sessions))
 	for i, s := range m.sessions {
-		items[i] = PickerItem{Label: s.name, Data: i}
+		items[i] = PickerItem{Label: s.name, Data: s}
 	}
 	m.pushOverlay(NewPickerOverlay("sessions", items, func(it PickerItem) {
-		idx := it.Data.(int)
-		if idx < len(m.sessions) {
-			m.active = idx
-			m.syncActive()
+		target := it.Data.(*Session)
+		for i, s := range m.sessions {
+			if s == target {
+				m.active = i
+				m.syncActive()
+				return
+			}
 		}
 	}))
 	return nil
@@ -197,9 +201,10 @@ func (m *Model) actPickSession() tea.Cmd {
 
 // actPickTab opens a picker over the current session's tabs. Captures the
 // session pointer at open-time so a session switch between open and pick
-// can't redirect the result onto whichever session happens to be focused
-// at commit time (defensive; pickers are modal so this shouldn't happen,
-// but the cost is one closure).
+// can't redirect the result. Items carry the *Tab pointer, resolved back to
+// its current index at commit time — a cascade can remove tabs (shifting
+// indices) while the picker is up; a vanished tab is a no-op, and if the
+// whole session died its tabs slice is empty so the loop finds nothing.
 func (m *Model) actPickTab() tea.Cmd {
 	s := m.sessions[m.active]
 	items := make([]PickerItem, len(s.tabs))
@@ -209,14 +214,17 @@ func (m *Model) actPickTab() tea.Cmd {
 		items[i] = PickerItem{
 			Label:  fmt.Sprintf("%d - %s", i+1, t.Label()),
 			Search: t.Label(),
-			Data:   i,
+			Data:   t,
 		}
 	}
 	m.pushOverlay(NewPickerOverlay("tabs", items, func(it PickerItem) {
-		idx := it.Data.(int)
-		if idx < len(s.tabs) {
-			s.active = idx
-			m.syncActive()
+		target := it.Data.(*Tab)
+		for i, t := range s.tabs {
+			if t == target {
+				s.active = i
+				m.syncActive()
+				return
+			}
 		}
 	}))
 	return nil
@@ -285,9 +293,9 @@ func (m *Model) actKillPane() tea.Cmd {
 	return cmd
 }
 
-// actKillTab closes every pane in the current tab and removes the tab from
-// its session. If the session ends up empty, it's removed; if no sessions
-// remain, gwam quits. Each pane's pty is closed here; the read loops will
+// actKillTab closes every pane in the current tab and removes the tab via
+// the shared removeTab cascade (session removed if it empties, quit when no
+// sessions remain). Each pane's pty is closed here; the read loops will
 // see EOF and emit ptyReadMsg{err: ...}, but closePane's lookup will no-op
 // because the panes are no longer reachable from any tab.
 func (m *Model) actKillTab() tea.Cmd {
@@ -296,23 +304,7 @@ func (m *Model) actKillTab() tea.Cmd {
 	for _, p := range t.panes() {
 		p.pty.Close()
 	}
-	s.tabs = append(s.tabs[:s.active], s.tabs[s.active+1:]...)
-	if len(s.tabs) > 0 {
-		if s.active >= len(s.tabs) {
-			s.active = len(s.tabs) - 1
-		}
-		m.syncActive()
-		return nil
-	}
-	m.sessions = append(m.sessions[:m.active], m.sessions[m.active+1:]...)
-	if len(m.sessions) == 0 {
-		return tea.Quit
-	}
-	if m.active >= len(m.sessions) {
-		m.active = len(m.sessions) - 1
-	}
-	m.syncActive()
-	return nil
+	return m.removeTab(m.active, s.active)
 }
 
 // actResize finds the nearest ancestor split matching dir and nudges its

@@ -309,34 +309,51 @@ func (m *Model) closePane(p *Pane) (tea.Model, tea.Cmd) {
 				continue
 			}
 			if t.root.collapseLeaf(leaf) {
-				// Tab survives — pick a new active pane (first leaf is fine).
-				t.active = t.root.leaves()[0].pane
+				// Tab survives — refocus only if the dying pane was the
+				// active one; a background pane exiting shouldn't steal focus.
+				if t.active == p {
+					t.active = t.root.leaves()[0].pane
+				}
 				if si == m.active && ti == s.active {
 					m.syncActive()
 				}
 				return m, nil
 			}
 			// Tab dies — drop it and cascade.
-			s.tabs = append(s.tabs[:ti], s.tabs[ti+1:]...)
-			if len(s.tabs) > 0 {
-				if s.active >= len(s.tabs) {
-					s.active = len(s.tabs) - 1
-				}
-				if si == m.active {
-					m.syncActive()
-				}
-				return m, nil
-			}
-			m.sessions = append(m.sessions[:si], m.sessions[si+1:]...)
-			if len(m.sessions) == 0 {
-				return m, tea.Quit
-			}
-			if m.active >= len(m.sessions) {
-				m.active = len(m.sessions) - 1
-			}
-			m.syncActive()
-			return m, nil
+			return m, m.removeTab(si, ti)
 		}
 	}
 	return m, nil
+}
+
+// removeTab drops tab ti from session si and cascades: the session is removed
+// if it empties, and the program quits when no sessions remain. Active indices
+// are shifted (not just clamped) so removing a tab/session *below* the active
+// one doesn't silently move focus to a different neighbor — the pane the user
+// was looking at stays focused. The caller is responsible for the tab's ptys.
+func (m *Model) removeTab(si, ti int) tea.Cmd {
+	s := m.sessions[si]
+	s.tabs = append(s.tabs[:ti], s.tabs[ti+1:]...)
+	if len(s.tabs) > 0 {
+		if ti < s.active {
+			s.active--
+		} else if s.active >= len(s.tabs) {
+			s.active = len(s.tabs) - 1
+		}
+		if si == m.active {
+			m.syncActive()
+		}
+		return nil
+	}
+	m.sessions = append(m.sessions[:si], m.sessions[si+1:]...)
+	if len(m.sessions) == 0 {
+		return tea.Quit
+	}
+	if si < m.active {
+		m.active--
+	} else if m.active >= len(m.sessions) {
+		m.active = len(m.sessions) - 1
+	}
+	m.syncActive()
+	return nil
 }
