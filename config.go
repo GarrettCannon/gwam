@@ -274,4 +274,3 @@ func formatArgs(args any) string {
 		return fmt.Sprintf("args=%+v", args)
 	}
 }
-

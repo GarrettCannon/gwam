@@ -34,16 +34,16 @@ const (
 // overlay reads them once per action regardless of how many keys bind it.
 //
 //   - ID     — stable identifier ("tab.new", "pane.resize"); the keymap
-//              stores this string, the registry resolves it at lookup.
+//     stores this string, the registry resolves it at lookup.
 //   - Label  — overlay row text ("Resize left").
 //   - Help   — full sentence for help surfaces.
 //   - Group  — overlay section ("tabs", "panes", ...); "" = general.
 //   - Status — optional live suffix (e.g. mouse "(on)"). Reads Model, not
-//              Ctx, because the panel renders bindings without firing them.
+//     Ctx, because the panel renders bindings without firing them.
 //   - Flags  — see ActionFlag.
 //   - Parse  — converts a raw TOML arg map into the action's typed args
-//              struct, validating up-front. nil means "takes no args";
-//              callers MUST pass Args = nil for actions without a Parse.
+//     struct, validating up-front. nil means "takes no args";
+//     callers MUST pass Args = nil for actions without a Parse.
 //   - Run    — executes against ctx; ctx.Args is whatever Parse returned.
 type Action struct {
 	ID     string
