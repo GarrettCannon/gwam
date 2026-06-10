@@ -56,6 +56,7 @@ func makeDefaultBindings() []BindingSpec {
 		{Trigger: pre("$"), ActionID: "session.rename"},
 		{Trigger: pre("T"), ActionID: "tab.pick"},
 		{Trigger: dir("ctrl-t"), ActionID: "tab.pick"},
+		{Trigger: pre("!"), ActionID: "popup.toggle", Args: map[string]any{"name": "scratch"}, Label: "Scratch popup"},
 		{Trigger: pre("m"), ActionID: "mouse.toggle"},
 		{Trigger: pre("q"), ActionID: "quit"},
 	}

@@ -218,6 +218,10 @@ type Session struct {
 	name   string
 	tabs   []*Tab
 	active int
+	// popups are this session's named floating panes (see popup.go), keyed
+	// by the popup.toggle binding's name arg. Lazily allocated on first
+	// toggle. Hidden popups keep their pty alive — that's the point.
+	popups map[string]*Popup
 }
 
 type Model struct {
@@ -291,8 +295,11 @@ func (m *Model) curPane() *Pane {
 	return m.curTab().active
 }
 
+// syncActive mirrors the focused pane (the visible popup's pane if any,
+// else the active tab's active pane) into the atomics the stdin pump reads,
+// so raw keystrokes land on whatever the user is looking at.
 func (m *Model) syncActive() {
-	p := m.curPane()
+	p := m.focusPane()
 	m.activePty.Store(p.pty)
 	m.inScroll.Store(p.scrollOff > 0)
 }
@@ -302,6 +309,18 @@ func (m *Model) syncActive() {
 // program quits. Cascades like tmux all the way up.
 func (m *Model) closePane(p *Pane) (tea.Model, tea.Cmd) {
 	p.pty.Close()
+	// Popup panes live outside the tab tree — a popup whose pty dies (shell
+	// exited) is dropped from its session, and input falls back to the tab
+	// pane if it was the visible one.
+	for _, s := range m.sessions {
+		for name, pu := range s.popups {
+			if pu.pane == p {
+				delete(s.popups, name)
+				m.syncActive()
+				return m, nil
+			}
+		}
+	}
 	for si, s := range m.sessions {
 		for ti, t := range s.tabs {
 			leaf := t.root.findLeaf(p)
@@ -344,6 +363,12 @@ func (m *Model) removeTab(si, ti int) tea.Cmd {
 			m.syncActive()
 		}
 		return nil
+	}
+	// Session dies — close its popup ptys too. Their read loops will EOF
+	// and emit ptyReadMsg, but closePane's lookups no-op because the
+	// session is no longer reachable.
+	for _, pu := range s.popups {
+		pu.pane.pty.Close()
 	}
 	m.sessions = append(m.sessions[:si], m.sessions[si+1:]...)
 	if len(m.sessions) == 0 {

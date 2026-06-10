@@ -107,7 +107,7 @@ func tabBarLayout(m *Model) (bar string, chipRects []chipRect) {
 	}
 	rightBar := tabsStr + " " + sessionStr + " " + prefixStr
 	var leading int
-	if p := m.curPane(); p.scrollOff > 0 {
+	if p := m.focusPane(); p.scrollOff > 0 {
 		max := p.vt.Scrollback().Len()
 		scrollStr := scrollChip.Render(fmt.Sprintf(" SCROLL %d/%d ", p.scrollOff, max))
 		rightBar = scrollStr + " " + rightBar
@@ -208,10 +208,18 @@ func (m *Model) View() tea.View {
 	body := renderBody(rects, divs, m.w, inner)
 	base := tabBar + "\n" + body
 
+	// Session popup floats over the body, below the overlay stack (so a
+	// picker or rename opened while it's up still renders on top) and
+	// below the prefix cheatsheet.
+	composed := base
+	pu := m.visiblePopup()
+	if pu != nil {
+		r := m.popupRect(pu)
+		composed = composeOverlay(composed, renderPopup(pu, r), r.X, r.Y)
+	}
 	// Overlay stack: bottom→top, each composed on top of the previous.
 	// Each overlay's Render returns a styled block; Anchor.Place sizes it
 	// against (m.w, m.h) using the block's own width/height.
-	composed := base
 	for _, ov := range m.overlays {
 		panel := ov.Render(m)
 		x, y := ov.Anchor().Place(m.w, m.h, lipgloss.Width(panel), lipgloss.Height(panel))
@@ -232,37 +240,34 @@ func (m *Model) View() tea.View {
 	v := tea.NewView(composed)
 	v.AltScreen = true
 
-	// surface the active pane's pty cursor at its absolute coordinates: the
-	// pane's rect origin plus the emulator's cursor offset, plus 1 row for
-	// the tab bar. when the shell hides the cursor (DECTCEM off), we're
-	// scrolled into history, or an interactive overlay/prefix owns input,
-	// leave v.Cursor nil — but give a CursorProvider overlay a chance to
-	// paint its own cursor (top-down so the topmost wins).
+	// surface the focused pane's pty cursor at its absolute coordinates:
+	// the pane's on-screen origin plus the emulator's cursor offset. The
+	// focused pane is the visible popup's if one is up (origin = popup
+	// rect + 1 for the border), else the active tab pane (origin = body
+	// rect + tabBarH). when the shell hides the cursor (DECTCEM off),
+	// we're scrolled into history, or an interactive overlay/prefix owns
+	// input, leave v.Cursor nil — but give a CursorProvider overlay a
+	// chance to paint its own cursor (top-down so the topmost wins).
 	p := t.active
-	if p.cursorVisible && p.scrollOff == 0 && !m.prefix && m.topInteractiveOverlay() == nil {
-		if r, ok := rects[p]; ok {
-			// Mirror renderPaneBody's source choice — while a sync block is
-			// active the cursor would otherwise jitter across the frame-N+1
-			// column-jumps that aren't yet visible. paneRenderSource also
-			// handles timeout expiry, so checking syncFrozen here covers the
-			// same window.
-			var px, py int
-			if p.syncFrozen && time.Since(p.syncStartedAt) < syncTimeout {
-				px, py = p.syncCursorX, p.syncCursorY
-			} else {
-				pos := p.vt.CursorPosition()
-				px, py = pos.X, pos.Y
-			}
-			c := tea.NewCursor(r.X+px, r.Y+py+tabBarH)
-			// suppress bubbletea's DECSCUSR emission so the terminal keeps its
-			// user-configured cursor shape. bubbletea only writes the style when
-			// encodeCursorStyle(new) != encodeCursorStyle(old); on first render
-			// lastView is nil so old encodes to 0. shape=-1, blink=false yields
-			// (-1*2)+1+1 = 0, matching, so no DECSCUSR is ever written.
-			c.Shape = tea.CursorShape(-1)
-			c.Blink = false
-			v.Cursor = c
-		}
+	ox, oy, haveOrigin := 0, 0, false
+	if pu != nil {
+		p = pu.pane
+		r := m.popupRect(pu)
+		ox, oy, haveOrigin = r.X+1, r.Y+1, true
+	} else if r, ok := rects[p]; ok {
+		ox, oy, haveOrigin = r.X, r.Y+tabBarH, true
+	}
+	if haveOrigin && p.cursorVisible && p.scrollOff == 0 && !m.prefix && m.topInteractiveOverlay() == nil {
+		px, py := paneCursorPos(p)
+		c := tea.NewCursor(ox+px, oy+py)
+		// suppress bubbletea's DECSCUSR emission so the terminal keeps its
+		// user-configured cursor shape. bubbletea only writes the style when
+		// encodeCursorStyle(new) != encodeCursorStyle(old); on first render
+		// lastView is nil so old encodes to 0. shape=-1, blink=false yields
+		// (-1*2)+1+1 = 0, matching, so no DECSCUSR is ever written.
+		c.Shape = tea.CursorShape(-1)
+		c.Blink = false
+		v.Cursor = c
 	}
 	// If the pane cursor was suppressed, give a CursorProvider overlay a
 	// chance to surface one (topmost wins). Most overlays paint a fake
@@ -334,6 +339,19 @@ func paneRenderSource(p *Pane) string {
 		p.syncSnapshot = ""
 	}
 	return p.vt.Render()
+}
+
+// paneCursorPos mirrors paneRenderSource's choice for the cursor: while a
+// DECSET 2026 sync block is active, return the position captured at ?2026h —
+// the live position would jitter across frame-N+1 column-jumps that aren't
+// visible yet. Timeout expiry falls back to the live cursor, matching the
+// render path.
+func paneCursorPos(p *Pane) (int, int) {
+	if p.syncFrozen && time.Since(p.syncStartedAt) < syncTimeout {
+		return p.syncCursorX, p.syncCursorY
+	}
+	pos := p.vt.CursorPosition()
+	return pos.X, pos.Y
 }
 
 // renderPaneBody returns exactly h rows × w cols of text for a single pane,

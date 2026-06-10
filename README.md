@@ -75,6 +75,7 @@ The prefix is **Ctrl-A**. Press it, then a key:
 | W         | pick a session (search + select)                    |
 | $         | rename the current session                          |
 | T         | pick a tab in the current session (search + select) |
+| !         | toggle the "scratch" popup (floating shell pane)    |
 | m         | toggle mouse mode (on by default) — flashes a toast |
 
 Also, **outside the prefix**: `ctrl-t` directly opens the tab picker. See
@@ -172,6 +173,7 @@ conflict message.
 | `session.next`    | —                                             |                                        |
 | `session.pick`    | —                                             | opens a picker over all sessions       |
 | `session.rename`  | —                                             | owns input while rename overlay is up  |
+| `popup.toggle`    | `{ name, cmd, cwd, width, height }` (all opt) | floating session-scoped pane; see "Popups" |
 | `mouse.toggle`    | —                                             |                                        |
 | `quit`            | —                                             |                                        |
 
@@ -207,6 +209,52 @@ the mouse wheel. The hardware cursor follows the active pane.
 Dividers are drawn as plain `│` / `─` lines in dim grey. T-junctions
 where a vertical and horizontal divider meet aren't drawn specially —
 one overlaps the other.
+
+## Popups
+
+A popup is a floating pane that toggles on and off over the current
+session — picture opening lazygit once at work start and flipping it up
+whenever you need it. The popup's shell and whatever runs in it **keep
+running while hidden**: toggling off only hides the window, and toggling
+back on shows the same instance exactly where it was.
+
+- Popups are **scoped to a session** and keyed by `name` — `prefix !` in
+  two different sessions gives you two independent "scratch" popups.
+  Switching sessions hides/restores each session's own popup state.
+- One popup per session is visible at a time; showing one hides the others.
+- While a popup is visible it owns the keyboard (the prefix still works)
+  and the mouse: clicks inside forward to the popup, clicks outside are
+  swallowed. The SCROLL chip and wheel scrollback target the popup.
+- A popup dies when its shell exits (`exit` / Ctrl-D) — quitting just the
+  program inside (e.g. `q` in lazygit) drops you to the popup's shell,
+  which keeps the popup alive. The next toggle of that name spawns fresh.
+
+The default binding is `prefix !` → an 80%×80% shell popup named
+"scratch". Real configs bind their own:
+
+```toml
+# prefix g: lazygit in a big popup, started in the repo
+[[binding]]
+key    = "g"
+action = "popup.toggle"
+args   = { name = "git", cmd = "lazygit", cwd = "~/projects/gwam", width = 0.9, height = 0.9 }
+label  = "Lazygit"
+
+# ctrl-g from anywhere, no prefix (swallows ctrl-g from inner shells)
+[[binding]]
+key    = "ctrl-g"
+action = "popup.toggle"
+args   = { name = "git", cmd = "lazygit" }
+direct = true
+```
+
+Args (all optional): `name` identifies the popup within a session
+(default "default"); `cmd` is written to the popup's shell on first
+create (same shell-exec semantics as templates); `cwd` sets its working
+directory (`~` expands); `width`/`height` size it as fractions of the
+screen (`0.8`) or whole percents (`80`). `cmd`, `cwd`, and the size are
+fixed when the popup is first created — later toggles of the same name
+reuse the running instance and ignore them.
 
 ## Tab labels
 
@@ -333,6 +381,9 @@ Per-feature Go files:
 - `overlay_rename.go`, `overlay_picker.go`, `overlay_confirm.go`,
   `overlay_notice.go` — concrete overlay kits. Each is one struct
   implementing `Overlay`, plus a small constructor.
+- `popup.go` — session-scoped floating panes: `Popup`, `Session.popups`
+  helpers (`visiblePopup`, `focusPane`), `popupRect`/`renderPopup`,
+  `actPopupToggle`, and `popup.toggle` arg parsing.
 - `input.go` — the stdin pump (`startInputPump`): catches Ctrl-A (legacy
   `0x01` and kitty `\x1b[97;5u`), decodes kitty CSI-u keystrokes back to
   legacy bytes, drops terminal device-report responses, and forwards

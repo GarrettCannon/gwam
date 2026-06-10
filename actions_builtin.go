@@ -117,6 +117,20 @@ func init() {
 		Run:   func(c *Ctx) tea.Cmd { return c.M.actRenameSession() },
 	})
 
+	// popup.toggle shows/hides a named floating pane scoped to the current
+	// session. Args (all optional): name distinguishes popups within a
+	// session; cmd/cwd seed the shell on first create; width/height size
+	// the popup as fractions (or percents) of the screen. The popup's pty
+	// stays alive while hidden, so a TUI like lazygit resumes where it was.
+	registerAction(&Action{
+		ID: "popup.toggle", Label: "Toggle popup", Group: "popups",
+		Help:  "Show/hide a floating popup pane in the current session. Keeps running while hidden.",
+		Parse: parsePopupToggleArgs,
+		Run: func(c *Ctx) tea.Cmd {
+			return c.M.actPopupToggle(c.Args.(*popupToggleArgs))
+		},
+	})
+
 	registerAction(&Action{
 		ID: "mouse.toggle", Label: "Toggle mouse mode",
 		Help:   "Enable host-terminal mouse reporting so the wheel scrolls history. Breaks native click-drag selection — hold Option to bypass.",

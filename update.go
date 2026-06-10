@@ -30,6 +30,12 @@ func (m *Model) applyLayoutSizes() {
 				resizePane(pane, r.W, r.H)
 			}
 		}
+		// Hidden popups are resized too, so the app inside (which keeps
+		// running) sees the winch now and is already laid out when re-shown.
+		for _, pu := range s.popups {
+			r := m.popupRect(pu)
+			resizePane(pu.pane, r.W-2, r.H-2)
+		}
 	}
 }
 
@@ -53,7 +59,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, readPty(msg.pane)
 
 	case wheelMsg:
-		p := m.curPane()
+		p := m.focusPane()
 		max := p.vt.Scrollback().Len()
 		step := 3
 		if msg.up {
@@ -71,7 +77,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case snapMsg:
-		p := m.curPane()
+		p := m.focusPane()
 		p.scrollOff = 0
 		m.inScroll.Store(false)
 		return m, nil
@@ -98,6 +104,23 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case mousePressMsg:
+		// A visible popup is modal for the mouse: presses inside its inner
+		// area forward to its pty; anything outside (tab bar included) is
+		// swallowed so a click can't half-interact with what's underneath.
+		if pu := m.visiblePopup(); pu != nil {
+			r := m.popupRect(pu)
+			sx, sy := msg.x-1, msg.y-1 // 0-indexed screen coords
+			if sx >= r.X+1 && sx < r.X+r.W-1 && sy >= r.Y+1 && sy < r.Y+r.H-1 {
+				if pu.pane.scrollOff > 0 {
+					pu.pane.scrollOff = 0
+					m.inScroll.Store(false)
+				}
+				pu.pane.pty.Write(msg.data)
+			} else {
+				m.swallowMouseRelease = true
+			}
+			return m, nil
+		}
 		// SGR coords are 1-indexed; the body starts below the tab bar.
 		bx := msg.x - 1
 		by := msg.y - 1 - tabBarH
@@ -148,7 +171,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.swallowMouseRelease = false
 			return m, nil
 		}
-		p := m.curPane()
+		p := m.focusPane()
 		if p.scrollOff > 0 {
 			p.scrollOff = 0
 			m.inScroll.Store(false)

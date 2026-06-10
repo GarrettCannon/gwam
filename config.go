@@ -267,6 +267,15 @@ func formatArgs(args any) string {
 		return fmt.Sprintf("args={dir=%s}", dir)
 	case *tabJumpArgs:
 		return fmt.Sprintf("args={idx=%d}", a.idx)
+	case *popupToggleArgs:
+		s := fmt.Sprintf("args={name=%s", a.name)
+		if a.cmd != "" {
+			s += fmt.Sprintf(" cmd=%q", a.cmd)
+		}
+		if a.cwd != "" {
+			s += fmt.Sprintf(" cwd=%q", a.cwd)
+		}
+		return s + fmt.Sprintf(" width=%.2f height=%.2f}", a.width, a.height)
 	default:
 		// Unknown action arg type; fall through to a best-effort %+v so
 		// future additions still show *something* without needing this
