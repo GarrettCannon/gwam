@@ -130,15 +130,24 @@ func tabBarLayout(m *Model) (bar string, chipRects []chipRect) {
 	return bar, chipRects
 }
 
-// computeRects walks layout l, sized into (x, y, w, h), and returns a
-// rectangle per leaf pane. Dividers eat 1 row/col between siblings; ratios are
-// clamped so neither child collapses to zero.
-func computeRects(l *Layout, x, y, w, h int) map[*Pane]Rect {
-	out := map[*Pane]Rect{}
+// dividers describes each separator a split contributes, in absolute coords.
+type dividerSpec struct {
+	x, y, length int
+	vertical     bool
+}
+
+// layoutGeometry walks layout l, sized into (x, y, w, h), and returns a
+// rectangle per leaf pane plus the divider run each split contributes.
+// Dividers eat 1 row/col between siblings; ratios are clamped so neither
+// child collapses to zero. Rects and dividers come out of the same walk so
+// the split arithmetic can never disagree between the two.
+func layoutGeometry(l *Layout, x, y, w, h int) (map[*Pane]Rect, []dividerSpec) {
+	rects := map[*Pane]Rect{}
+	var divs []dividerSpec
 	var walk func(n *Layout, x, y, w, h int)
 	walk = func(n *Layout, x, y, w, h int) {
 		if n.IsLeaf() {
-			out[n.pane] = Rect{x, y, w, h}
+			rects[n.pane] = Rect{x, y, w, h}
 			return
 		}
 		switch n.split {
@@ -155,59 +164,7 @@ func computeRects(l *Layout, x, y, w, h int) map[*Pane]Rect {
 			if wa > avail-1 {
 				wa = avail - 1
 			}
-			wb := avail - wa
-			walk(n.a, x, y, wa, h)
-			walk(n.b, x+wa+1, y, wb, h)
-		case splitH:
-			avail := h - 1
-			if avail < 2 {
-				avail = 2
-			}
-			ha := int(float64(avail) * n.ratio)
-			if ha < 1 {
-				ha = 1
-			}
-			if ha > avail-1 {
-				ha = avail - 1
-			}
-			hb := avail - ha
-			walk(n.a, x, y, w, ha)
-			walk(n.b, x, y+ha+1, w, hb)
-		}
-	}
-	walk(l, x, y, w, h)
-	return out
-}
-
-// dividers describes each separator a split contributes, in absolute coords.
-type dividerSpec struct {
-	x, y, length int
-	vertical     bool
-}
-
-// collectDividers returns the separator runs for a layout, sized into
-// (x, y, w, h). These match the gaps left by computeRects.
-func collectDividers(l *Layout, x, y, w, h int) []dividerSpec {
-	var out []dividerSpec
-	var walk func(n *Layout, x, y, w, h int)
-	walk = func(n *Layout, x, y, w, h int) {
-		if n.IsLeaf() {
-			return
-		}
-		switch n.split {
-		case splitV:
-			avail := w - 1
-			if avail < 2 {
-				avail = 2
-			}
-			wa := int(float64(avail) * n.ratio)
-			if wa < 1 {
-				wa = 1
-			}
-			if wa > avail-1 {
-				wa = avail - 1
-			}
-			out = append(out, dividerSpec{x: x + wa, y: y, length: h, vertical: true})
+			divs = append(divs, dividerSpec{x: x + wa, y: y, length: h, vertical: true})
 			walk(n.a, x, y, wa, h)
 			walk(n.b, x+wa+1, y, avail-wa, h)
 		case splitH:
@@ -222,13 +179,20 @@ func collectDividers(l *Layout, x, y, w, h int) []dividerSpec {
 			if ha > avail-1 {
 				ha = avail - 1
 			}
-			out = append(out, dividerSpec{x: x, y: y + ha, length: w, vertical: false})
+			divs = append(divs, dividerSpec{x: x, y: y + ha, length: w, vertical: false})
 			walk(n.a, x, y, w, ha)
 			walk(n.b, x, y+ha+1, w, avail-ha)
 		}
 	}
 	walk(l, x, y, w, h)
-	return out
+	return rects, divs
+}
+
+// computeRects is layoutGeometry for callers that only need the pane rects
+// (layout sizing, mouse hit-testing).
+func computeRects(l *Layout, x, y, w, h int) map[*Pane]Rect {
+	rects, _ := layoutGeometry(l, x, y, w, h)
+	return rects
 }
 
 func (m *Model) View() tea.View {
@@ -240,8 +204,8 @@ func (m *Model) View() tea.View {
 	tabBar, _ := tabBarLayout(m)
 
 	inner := m.bodyHeight()
-	rects := computeRects(t.root, 0, 0, m.w, inner)
-	body := renderBody(t, rects, m.w, inner)
+	rects, divs := layoutGeometry(t.root, 0, 0, m.w, inner)
+	body := renderBody(rects, divs, m.w, inner)
 	base := tabBar + "\n" + body
 
 	// Overlay stack: bottom→top, each composed on top of the previous.
@@ -319,8 +283,8 @@ func (m *Model) View() tea.View {
 
 // renderBody composites the body area: a blank base of `inner` rows × w cols,
 // each pane's content layered at its rect, dividers between siblings as
-// further layers.
-func renderBody(t *Tab, rects map[*Pane]Rect, w, inner int) string {
+// further layers. rects and divs come from the same layoutGeometry walk.
+func renderBody(rects map[*Pane]Rect, divs []dividerSpec, w, inner int) string {
 	// Base: solid blank canvas so the compositor's output has exact dimensions.
 	blankRow := strings.Repeat(" ", w)
 	baseRows := make([]string, inner)
@@ -332,7 +296,7 @@ func renderBody(t *Tab, rects map[*Pane]Rect, w, inner int) string {
 	layers := []*lipgloss.Layer{lipgloss.NewLayer(baseStr).X(0).Y(0).Z(0)}
 
 	// Dividers first (Z=1) so pane content (Z=2) overdraws any stray join cells.
-	for _, d := range collectDividers(t.root, 0, 0, w, inner) {
+	for _, d := range divs {
 		var s string
 		if d.vertical {
 			rows := make([]string, d.length)
