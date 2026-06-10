@@ -180,6 +180,45 @@ func startInputPump(
 			}
 			return consumed, []byte{b}
 		}
+		// incompleteSeqTail reports whether c[i:] is the start of a CSI or
+		// OSC sequence whose terminator hasn't arrived in this chunk. Such a
+		// tail is held back (pending) and prepended to the next read so a
+		// sequence split across read boundaries — a mouse SGR event, a kitty
+		// CSI-u keystroke, a device report — doesn't leak fragments to the
+		// pty (with ECHO on, half a mouse event echoes as text). A lone
+		// trailing ESC is NOT held: it's far more likely the Esc key than a
+		// sequence split exactly after its first byte, and holding it would
+		// delay the keypress until the next read.
+		incompleteSeqTail := func(c []byte, i int) bool {
+			if c[i] != 0x1b || i+1 >= len(c) {
+				return false
+			}
+			switch c[i+1] {
+			case '[':
+				for j := i + 2; j < len(c); j++ {
+					if c[j] >= 0x40 && c[j] <= 0x7e {
+						return false // complete CSI — the matchers had their chance
+					}
+				}
+				return true
+			case ']':
+				for j := i + 2; j < len(c); j++ {
+					if c[j] == 0x07 {
+						return false
+					}
+					if c[j] == 0x1b && j+1 < len(c) && c[j+1] == '\\' {
+						return false
+					}
+				}
+				return true
+			}
+			return false
+		}
+		// Carry-over cap: a tail that keeps growing past this without a
+		// terminator isn't a real control sequence (e.g. cat-ing a binary
+		// with a stray ESC[) — give up and forward it raw, as before.
+		const maxPendingSeq = 256
+		var pending []byte
 		// private CSI (\x1b[?...{final}) and OSC (\x1b]...{BEL|ST}) are never
 		// keystrokes — they're terminal device responses.
 		skipDeviceReport := func(c []byte, i int) int {
@@ -218,11 +257,25 @@ func startInputPump(
 				return
 			}
 			chunk := buf[:n]
+			if len(pending) > 0 {
+				chunk = append(pending, chunk...)
+				pending = nil
+			}
 
 			flush := 0
 			i := 0
 			for i < len(chunk) {
 				if armed {
+					// A kitty-encoded follow key split across reads would
+					// otherwise be consumed byte-by-byte; hold the tail and
+					// stay armed for the next chunk.
+					if incompleteSeqTail(chunk, i) && len(chunk)-i <= maxPendingSeq {
+						writePty(chunk[flush:i])
+						pending = append([]byte(nil), chunk[i:]...)
+						i = len(chunk)
+						flush = i
+						continue
+					}
 					armed = false
 					b := chunk[i]
 					consumed := 1
@@ -317,6 +370,16 @@ func startInputPump(
 						}
 					}
 					i += mlen
+					flush = i
+					continue
+				}
+				// No matcher consumed this ESC but it starts a CSI/OSC whose
+				// terminator hasn't arrived — hold the tail for the next read
+				// instead of leaking the fragment to the pty.
+				if incompleteSeqTail(chunk, i) && len(chunk)-i <= maxPendingSeq {
+					writePty(chunk[flush:i])
+					pending = append([]byte(nil), chunk[i:]...)
+					i = len(chunk)
 					flush = i
 					continue
 				}
