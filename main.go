@@ -175,7 +175,7 @@ func run(sessionName, templateName string) {
 		}
 	}
 
-	tabs, err := spawnInitialTabs(h-2, w, tmpl)
+	tabs, err := spawnInitialTabs(h-tabBarH, w, tmpl)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "spawn:", err)
 		os.Exit(1)

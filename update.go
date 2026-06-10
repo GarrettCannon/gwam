@@ -22,10 +22,7 @@ func (m *Model) Init() tea.Cmd {
 // occupies in the current window. Called after window resize, split, kill,
 // and divider-drag — anything that changes a leaf's geometry.
 func (m *Model) applyLayoutSizes() {
-	inner := m.h - 1
-	if inner < 1 {
-		inner = 1
-	}
+	inner := m.bodyHeight()
 	for _, s := range m.sessions {
 		for _, t := range s.tabs {
 			rects := computeRects(t.root, 0, 0, m.w, inner)
@@ -101,9 +98,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case mousePressMsg:
-		// SGR coords are 1-indexed; the body sits 1 row below the tab bar.
+		// SGR coords are 1-indexed; the body starts below the tab bar.
 		bx := msg.x - 1
-		by := msg.y - 2
+		by := msg.y - 1 - tabBarH
 		if by < 0 {
 			// Click landed on the tab bar. Map x against the chip rects
 			// produced by tabBarLayout — same function the renderer uses
@@ -118,11 +115,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		t := m.curTab()
-		inner := m.h - 1
-		if inner < 1 {
-			inner = 1
-		}
-		rects := computeRects(t.root, 0, 0, m.w, inner)
+		rects := computeRects(t.root, 0, 0, m.w, m.bodyHeight())
 		var target *Pane
 		for pane, r := range rects {
 			if bx >= r.X && bx < r.X+r.W && by >= r.Y && by < r.Y+r.H {

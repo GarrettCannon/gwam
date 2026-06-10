@@ -83,7 +83,7 @@ func mouseStatus(m *Model) string {
 }
 
 func (m *Model) actNewTab() tea.Cmd {
-	p, err := spawnPane(m.h-2, m.w, SpawnOpts{})
+	p, err := spawnPane(m.bodyHeight(), m.w, SpawnOpts{})
 	if err != nil {
 		return nil
 	}
@@ -109,7 +109,7 @@ func (m *Model) actPrevTab() tea.Cmd {
 }
 
 func (m *Model) actNewSession() tea.Cmd {
-	p, err := spawnPane(m.h-2, m.w, SpawnOpts{})
+	p, err := spawnPane(m.bodyHeight(), m.w, SpawnOpts{})
 	if err != nil {
 		return nil
 	}
@@ -253,7 +253,7 @@ func (m *Model) split(dir splitDir) tea.Cmd {
 	}
 	// Spawn the new pane at the full body size; the resize pass on the next
 	// render will trim both panes to their post-split rects.
-	p, err := spawnPane(m.h-2, m.w, SpawnOpts{})
+	p, err := spawnPane(m.bodyHeight(), m.w, SpawnOpts{})
 	if err != nil {
 		return nil
 	}

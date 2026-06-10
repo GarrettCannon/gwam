@@ -56,6 +56,22 @@ var (
 			Foreground(lipgloss.Color("240"))
 )
 
+// tabBarH is the height of the tab bar in rows. Every piece of vertical
+// chrome math — body height, mouse-coordinate mapping, cursor placement,
+// overlay anchoring — derives from this one constant so adding a status
+// line later is a single-site change.
+const tabBarH = 1
+
+// bodyHeight is the number of rows below the tab bar available to panes.
+// This is the only correct height to spawn or resize a pane against.
+func (m *Model) bodyHeight() int {
+	h := m.h - tabBarH
+	if h < 1 {
+		return 1
+	}
+	return h
+}
+
 // Rect is an integer (x, y, w, h) — origin top-left, h and w in cells.
 type Rect struct{ X, Y, W, H int }
 
@@ -223,10 +239,7 @@ func (m *Model) View() tea.View {
 	t := m.curTab()
 	tabBar, _ := tabBarLayout(m)
 
-	inner := m.h - 1
-	if inner < 1 {
-		inner = 1
-	}
+	inner := m.bodyHeight()
 	rects := computeRects(t.root, 0, 0, m.w, inner)
 	body := renderBody(t, rects, m.w, inner)
 	base := tabBar + "\n" + body
@@ -249,7 +262,7 @@ func (m *Model) View() tea.View {
 		if px < 0 {
 			px = 0
 		}
-		composed = composeOverlay(composed, panel, px, 1)
+		composed = composeOverlay(composed, panel, px, tabBarH)
 	}
 
 	v := tea.NewView(composed)
@@ -276,7 +289,7 @@ func (m *Model) View() tea.View {
 				pos := p.vt.CursorPosition()
 				px, py = pos.X, pos.Y
 			}
-			c := tea.NewCursor(r.X+px, r.Y+py+1)
+			c := tea.NewCursor(r.X+px, r.Y+py+tabBarH)
 			// suppress bubbletea's DECSCUSR emission so the terminal keeps its
 			// user-configured cursor shape. bubbletea only writes the style when
 			// encodeCursorStyle(new) != encodeCursorStyle(old); on first render
