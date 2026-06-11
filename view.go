@@ -17,8 +17,8 @@ var (
 	tabActive = lipgloss.NewStyle().
 			Padding(0, 1).
 			Bold(true).
-			Foreground(lipgloss.Color("231")).
-			Background(lipgloss.Color("63"))
+			Foreground(lipgloss.Color("16")).
+			Background(lipgloss.Color("220"))
 	scrollChip = lipgloss.NewStyle().
 			Bold(true).
 			Foreground(lipgloss.Color("16")).
@@ -203,13 +203,23 @@ func (m *Model) View() tea.View {
 	if haveOrigin && p.cursorVisible && p.scrollOff == 0 && !m.prefix && m.topInteractiveOverlay() == nil {
 		px, py := paneCursorPos(p)
 		c := tea.NewCursor(ox+px, oy+py)
-		// suppress bubbletea's DECSCUSR emission so the terminal keeps its
-		// user-configured cursor shape. bubbletea only writes the style when
-		// encodeCursorStyle(new) != encodeCursorStyle(old); on first render
-		// lastView is nil so old encodes to 0. shape=-1, blink=false yields
-		// (-1*2)+1+1 = 0, matching, so no DECSCUSR is ever written.
-		c.Shape = tea.CursorShape(-1)
-		c.Blink = false
+		if p.cursorStyleSet {
+			// Honor the child's DECSCUSR. vt's CursorStyle enum matches
+			// tea's (block=0, underline=1, bar=2); cursorSteady is the
+			// inverse of blink. bubbletea diffs against the last emitted
+			// style and only writes DECSCUSR when it changes, so switching
+			// panes/tabs re-emits the new active pane's shape correctly.
+			c.Shape = tea.CursorShape(p.cursorStyle)
+			c.Blink = !p.cursorSteady
+		} else {
+			// No DECSCUSR seen yet — suppress bubbletea's emission so the
+			// terminal keeps its user-configured cursor shape. bubbletea only
+			// writes the style when encodeCursorStyle(new) != encodeCursorStyle(old);
+			// on first render lastView is nil so old encodes to 0. shape=-1,
+			// blink=false yields (-1*2)+1+1 = 0, matching, so nothing is written.
+			c.Shape = tea.CursorShape(-1)
+			c.Blink = false
+		}
 		v.Cursor = c
 	}
 	// If the pane cursor was suppressed, give a CursorProvider overlay a

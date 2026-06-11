@@ -79,6 +79,13 @@ func spawnPane(rows, cols int, opts SpawnOpts) (*Pane, error) {
 	emu.SetCallbacks(vt.Callbacks{
 		Title:            func(s string) { p.title = s },
 		CursorVisibility: func(v bool) { p.cursorVisible = v },
+		// DECSCUSR (CSI Ps SP q). The vt screen invokes this with !blink, so
+		// the second arg is "steady" (true = not blinking) despite its name.
+		CursorStyle: func(style vt.CursorStyle, steady bool) {
+			p.cursorStyleSet = true
+			p.cursorStyle = style
+			p.cursorSteady = steady
+		},
 		// OSC 7 — fish/zsh emit on each prompt with a file:// URL pointing at
 		// the shell's cwd. Strip the URL prefix so Label() can show the basename.
 		WorkingDirectory: func(s string) {

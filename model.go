@@ -20,6 +20,16 @@ type Pane struct {
 	pty           *os.File
 	vt            *vt.SafeEmulator
 	cursorVisible bool
+	// cursorStyle/cursorSteady track the child's last DECSCUSR (CSI Ps SP q)
+	// request — the shape (block/underline/bar) and whether it's steady (not
+	// blinking). cursorStyleSet stays false until the child first asks for a
+	// shape; until then we suppress DECSCUSR so the host terminal keeps its
+	// user-configured cursor. Honoring this is what lets neovim switch to a
+	// block cursor in normal mode and a bar in insert mode. Set from the vt
+	// CursorStyle callback (same goroutine as Write/View, see pty.go).
+	cursorStyleSet bool
+	cursorStyle    vt.CursorStyle
+	cursorSteady   bool
 	// scrollOff is lines scrolled above the live screen. 0 = live; positive
 	// values walk back into vt's scrollback. The active pane's value is mirrored
 	// to Model.inScroll so the stdin pump can snap back on the next keystroke.
