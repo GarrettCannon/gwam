@@ -102,6 +102,12 @@ func init() {
 		Status: zoomStatus,
 		Run:    func(c *Ctx) tea.Cmd { return c.M.actZoomPane() },
 	})
+	registerAction(&Action{
+		ID: "pane.search", Label: "Search output", Group: "panes",
+		Help:  "Live mnil-style search over the active pane's output (scrollback + screen). Type to filter, tab to hop matches, ^f to show only matches, ^l to follow.",
+		Flags: FlagOwnsInput,
+		Run:   func(c *Ctx) tea.Cmd { return c.M.actSearchPane() },
+	})
 
 	// pane.resize takes {dir = "left"|"right"|"up"|"down"}. The four
 	// historical bindings each pass a different dir; behavior, label, and

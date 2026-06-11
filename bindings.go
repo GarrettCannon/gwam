@@ -52,6 +52,7 @@ func makeDefaultBindings() []BindingSpec {
 		{Trigger: pre("down"), ActionID: "pane.select", Args: map[string]any{"dir": "down"}, Label: "Select down"},
 		{Trigger: pre("x"), ActionID: "pane.kill"},
 		{Trigger: pre("z"), ActionID: "pane.zoom"},
+		{Trigger: pre("/"), ActionID: "pane.search"},
 		{Trigger: pre("h"), ActionID: "pane.resize", Args: map[string]any{"dir": "left"}, Label: "Resize left"},
 		{Trigger: pre("l"), ActionID: "pane.resize", Args: map[string]any{"dir": "right"}, Label: "Resize right"},
 		{Trigger: pre("k"), ActionID: "pane.resize", Args: map[string]any{"dir": "up"}, Label: "Resize up"},
@@ -326,6 +327,15 @@ func zoomStatus(m *Model) string {
 		return "(on)"
 	}
 	return ""
+}
+
+// actSearchPane opens a live log-search overlay over the active pane. The
+// pane pointer is captured now so a pane-cycle or tab-switch while the
+// overlay is up can't redirect the search; follow starts on so the view
+// tracks the tail of a streaming log until the user types or scrolls.
+func (m *Model) actSearchPane() tea.Cmd {
+	m.pushOverlay(&LogSearchOverlay{pane: m.curPane(), follow: true})
+	return nil
 }
 
 // actCyclePane moves focus to the next leaf in layout order, wrapping at the
