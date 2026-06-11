@@ -1,5 +1,8 @@
 # compiled binary
 /gwam
 
+# goreleaser build output
+/dist/
+
 # local Claude Code permissions
 .claude/settings.local.json

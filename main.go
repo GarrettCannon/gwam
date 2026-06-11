@@ -21,7 +21,12 @@ func dlog(tag string, b []byte) {
 	fmt.Fprintf(dbg, "[%s] %q\n", tag, b)
 }
 
-const version = "0.0.1"
+// version is overridable at build time via:
+//
+//	go build -ldflags "-X main.version=v0.1.0"
+//
+// goreleaser injects the git tag on release; "dev" is the local default.
+var version = "dev"
 
 var templateFlag string
 
