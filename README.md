@@ -61,17 +61,21 @@ The prefix is **Ctrl-A**. Press it, then a key:
 |-----------|-----------------------------------------------------|
 | c         | new tab in the current session                      |
 | n / p     | next / previous tab (wraps)                         |
+| space     | flip to the previously active tab                   |
 | 1-9       | jump to tab N                                       |
 | ,         | rename the current tab (empty clears)               |
 | &         | kill the current tab and all its panes (cascades)   |
 | &#124;    | split the active pane vertically (left/right)       |
 | _         | split the active pane horizontally (top/bottom)     |
 | o         | cycle focus to the next pane in the current tab     |
+| ← → ↑ ↓   | move focus to the nearest pane in that direction    |
 | x         | kill the active pane (cascades: last pane → tab)    |
+| z         | zoom the active pane to full size (toggle)          |
 | h / l     | move nearest vertical divider left / right (5%)     |
 | j / k     | move nearest horizontal divider down / up (5%)      |
 | s         | new session (one fresh tab)                         |
 | w         | next session (wraps)                                |
+| L         | flip to the previously active session               |
 | W         | pick a session (search + select)                    |
 | $         | rename the current session                          |
 | T         | pick a tab in the current session (search + select) |
@@ -139,16 +143,26 @@ every shell or app running inside gwam. `ctrl-t` is bash's
 transpose-chars, fish's pager toggle, vim's tag-jump; pick what you
 direct-bind carefully.
 
-v1 only supports single-byte legacy encodings for the key:
+Bindable keys (direct or prefix):
 
 - printable ASCII (`"a"`, `"?"`)
-- `ctrl-<letter>` (a..z, A..Z)
-- `ctrl-space` (sends NUL)
+- `ctrl-<letter>` (a..z, A..Z) and `ctrl-space` (sends NUL)
 - the named keys `enter`, `tab`, `esc`, `space`, `backspace`
+- `alt-` + any of the single-byte keys above (`alt-x`, `alt-ctrl-g`) —
+  except `alt-[` and `alt-O`, whose encodings collide with the CSI / SS3
+  sequence introducers
+- arrows / `home` / `end` / `pgup` / `pgdn` / `insert` / `delete` /
+  `F1`..`F12`, alone or with any modifier combination (`ctrl-up`,
+  `shift-F5`), plus `shift-tab`
 
-`alt-*`, arrows, F-keys, and other multi-byte keys parse fine but error
-out at startup with "not encodable as legacy bytes" — they need a
-multi-byte matcher in the input pump that hasn't been built yet.
+Multi-byte keys are matched against their known legacy encodings (CSI,
+SS3, and tilde variants — e.g. both `\x1b[A` and `\x1bOA` for `up`);
+kitty-encoded keystrokes are decoded back to legacy form first, so both
+terminal modes hit the same table. One caveat for `alt-*`: the chord is
+recognized when ESC and the base byte arrive in the same read — which is
+how terminals send it — but pressing Esc and the base key in *very*
+quick succession can coalesce into one read and false-trigger. If you
+live in vim and want `alt-x`, know that failure mode exists.
 
 Ctrl-A is reserved as the prefix; binding it directly errors out with a
 conflict message.
@@ -160,6 +174,7 @@ conflict message.
 | `tab.new`         | —                                             |                                        |
 | `tab.next`        | —                                             |                                        |
 | `tab.prev`        | —                                             |                                        |
+| `tab.last`        | —                                             | flips to the previously active tab     |
 | `tab.rename`      | —                                             | owns input while rename overlay is up  |
 | `tab.kill`        | —                                             | cascades tab → session → quit          |
 | `tab.jump`        | `{ idx = N }`                                 | 0-based                                |
@@ -167,10 +182,13 @@ conflict message.
 | `pane.split-v`    | —                                             |                                        |
 | `pane.split-h`    | —                                             |                                        |
 | `pane.cycle`      | —                                             |                                        |
+| `pane.select`     | `{ dir = "left"\|"right"\|"up"\|"down" }`     | moves focus to the nearest pane that way |
 | `pane.kill`       | —                                             | cascades pane → tab → session → quit   |
+| `pane.zoom`       | —                                             | toggle; layout untouched while zoomed  |
 | `pane.resize`     | `{ dir = "left"\|"right"\|"up"\|"down" }`     | moves nearest matching divider by 5%   |
 | `session.new`     | —                                             |                                        |
 | `session.next`    | —                                             |                                        |
+| `session.last`    | —                                             | flips to the previously active session |
 | `session.pick`    | —                                             | opens a picker over all sessions       |
 | `session.rename`  | —                                             | owns input while rename overlay is up  |
 | `popup.toggle`    | `{ name, cmd, cwd, width, height }` (all opt) | floating session-scoped pane; see "Popups" |
@@ -195,9 +213,16 @@ fraction of the tab body occupied by the first child).
 - `prefix |` splits the active pane into a left/right pair at 50/50.
 - `prefix _` splits the active pane into a top/bottom pair at 50/50.
 - `prefix o` cycles focus through panes in layout order (wraps).
+- `prefix ←` / `→` / `↑` / `↓` move focus to the nearest pane in that
+  direction. The pane sharing the most edge across the boundary wins;
+  there's no wrap, so it's a no-op when nothing lies that way.
 - `prefix x` kills the active pane. If it was the only pane in the tab,
   the tab closes too; if it was the last tab in the session, the session
   closes; if it was the last session, gwam quits.
+- `prefix z` zooms the active pane to the full body (toggle). The split
+  tree is untouched — unzooming restores the exact layout. A purple
+  `ZOOM` chip shows in the tab bar while zoomed; splitting, cycling, or
+  a pane dying unzooms first so the visible panes always match the tree.
 - `prefix h` / `prefix l` move the **nearest enclosing vertical**
   divider left / right by 5% of the available width.
 - `prefix j` / `prefix k` move the **nearest enclosing horizontal**
@@ -206,9 +231,9 @@ fraction of the tab body occupied by the first child).
 Each pane keeps its own scrollback and only the active pane responds to
 the mouse wheel. The hardware cursor follows the active pane.
 
-Dividers are drawn as plain `│` / `─` lines in dim grey. T-junctions
-where a vertical and horizontal divider meet aren't drawn specially —
-one overlaps the other.
+Dividers are drawn as `│` / `─` lines in dim grey, with proper junction
+characters (`├ ┤ ┬ ┴ ┼`) where dividers meet. Divider segments bordering
+the active pane are tinted purple so the focused pane reads at a glance.
 
 ## Popups
 
@@ -308,12 +333,19 @@ While scrolled:
 The stdin pump owns input routing. It:
 
 - Catches Ctrl-A (legacy `0x01` and kitty `\x1b[97;5u`) to arm the prefix.
+- Matches multi-byte bound keys (arrows, F-keys, alt-chords) against the
+  keymap's escape-sequence index — both as direct keystrokes and as
+  prefix follow keys.
 - Decodes kitty keyboard CSI-u sequences (e.g. `\x1b[99;5u` → `0x03`) back
   to legacy bytes so the inner shell understands them. Bubbletea pushes
   kitty mode at startup, so without this Ctrl-C wouldn't reach a running
   command like `ping`.
 - Skips terminal device-report responses (`\x1b[?…` / OSC) that bubbletea's
   capability queries trigger.
+- Holds escape sequences split across reads so fragments never leak to
+  the pty, and swallows complete-but-unbound sequences that arrive while
+  the prefix is armed (an arrow after Ctrl-A cancels instead of typing
+  `[A` into the shell).
 - Forwards everything else to the active tab's pty.
 
 ## Overlays
@@ -349,18 +381,23 @@ Per-feature Go files:
 - `template.go` — TOML template loading and the `templates` listing.
 - `model.go` — `Pane`, `Layout`, `Tab`, `Session`, `Model` types + tea
   messages; tree helpers (`leaves`, `findLeaf`, `splitLeaf`,
-  `collapseLeaf`, `nearestSplit`); `cur*` accessors and `closePane` (the
+  `collapseLeaf`, `nearestSplit`); `cur*` accessors, the `switchTab` /
+  `switchSession` last-flip bookkeeping, and `closePane` (the
   pane → tab → session → quit cascade).
+- `layout.go` — pure layout geometry: `Rect`, `layoutGeometry` (the
+  rects + dividers walk), `computeRects`, `Tab.geometry` (zoom-aware),
+  and the divider junction math (`dividerArms`, `dividerRune`).
 - `actions.go` — `Action{ID, Label, Help, Group, Status, Flags, Parse,
   Run}` + the global `actions` registry. `Ctx{M, Args}` is what every
   action's `Run` receives.
 - `actions_builtin.go` — one `registerAction` call per built-in action,
   each a thin wrapper around the matching `act*` method.
 - `keymap.go` — `Trigger`, `BindingSpec` (raw declaration form),
-  `Binding` (resolved form), `Keymap` with prefix-byte index;
-  `buildKeymap` validates args up-front; `applyOverrides` overlays user
-  config on top of defaults. `defaultKeymap` is built at init from
-  defaults; `applyUserConfig` replaces it with the merged keymap.
+  `Binding` (resolved form), `Keymap` with byte indexes for single-byte
+  keys and sequence indexes for multi-byte ones; `buildKeymap` validates
+  args up-front; `applyOverrides` overlays user config on top of
+  defaults. `defaultKeymap` is built at init from defaults;
+  `applyUserConfig` replaces it with the merged keymap.
 - `bindings.go` — `defaultBindings` (the in-process binding table that
   references action IDs) and all `act*` methods.
 - `config.go` — `Config`/`ConfigBinding` TOML types, `loadConfig`,
@@ -373,8 +410,8 @@ Per-feature Go files:
 - `update.go` — `Model.Init`, `Model.Update`, `applyLayoutSizes` (the
   walk that resizes every pane to its current rect after any layout
   change).
-- `view.go` — styles, `Model.View`, layout math (`Rect`, `computeRects`,
-  `collectDividers`), and the body / scrollback / overlay renderers.
+- `view.go` — styles, `Model.View`, and the tab-bar / body / scrollback /
+  overlay renderers (layout math lives in `layout.go`).
 - `overlay.go` — `Overlay` interface, `Anchor` impls (center, top-right,
   fractional-y), `Model.overlays` stack, push/pop/remove helpers, and
   `overlayKeyMsg`.
@@ -385,9 +422,10 @@ Per-feature Go files:
   helpers (`visiblePopup`, `focusPane`), `popupRect`/`renderPopup`,
   `actPopupToggle`, and `popup.toggle` arg parsing.
 - `input.go` — the stdin pump (`startInputPump`): catches Ctrl-A (legacy
-  `0x01` and kitty `\x1b[97;5u`), decodes kitty CSI-u keystrokes back to
-  legacy bytes, drops terminal device-report responses, and forwards
-  everything else to the active pane's pty.
+  `0x01` and kitty `\x1b[97;5u`), matches direct/prefix-bound escape
+  sequences, decodes kitty CSI-u keystrokes back to legacy bytes, drops
+  terminal device-report responses, holds split sequences across reads,
+  and forwards everything else to the active pane's pty.
 - `platform_darwin.go` — macOS termios + process lookups (sysctl, `lsof`).
 - `platform_linux.go` — Linux termios + process lookups (`/proc/<pid>/comm`,
   `/proc/<pid>/cwd`).
@@ -403,10 +441,6 @@ the pump can passthrough raw bytes without going through `Update`.
 - macOS + Linux only — Windows would need a different pty backend and
   process-lookup story.
 - No "detach / attach" — gwam is a single-process foreground tool.
-- Pane dividers don't draw junctions (├ ┤ ┬ ┴ ┼) at intersections —
-  whichever divider was added later overdraws the other.
-- No visual highlight on the active pane's borders — focus is identified
-  by the hardware cursor only.
 - Pane renames aren't supported — `,` renames the tab; pane labels are
   always auto-derived from their fg-process / cwd.
 - The cheatsheet has no nested groups (LazyVim-style sub-panels).

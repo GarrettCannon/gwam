@@ -29,7 +29,7 @@ type Popup struct {
 
 var popupBorder = lipgloss.NewStyle().
 	Border(lipgloss.RoundedBorder()).
-	BorderForeground(lipgloss.Color("63"))
+	BorderForeground(lipgloss.Color("220"))
 
 // visiblePopup returns the current session's visible popup, or nil. At most
 // one is visible per session (enforced by actPopupToggle), so first match

@@ -190,6 +190,10 @@ type Tab struct {
 	customName string
 	root       *Layout
 	active     *Pane
+	// zoomed renders the active pane at full body size without touching the
+	// split tree. Cleared by anything that changes which panes are visible:
+	// split, cycle, and pane death (see closePane).
+	zoomed bool
 }
 
 // Label is what we show in the tab chip: explicit rename if set, else the
@@ -218,10 +222,27 @@ type Session struct {
 	name   string
 	tabs   []*Tab
 	active int
+	// lastTab is the previously active tab, for the tab.last flip. A pointer,
+	// not an index — tabs can be removed (shifting indices) between the
+	// switch that records it and the flip that uses it; a dead pointer just
+	// means "nowhere to flip to". Cleared by removeTab when its tab dies.
+	lastTab *Tab
 	// popups are this session's named floating panes (see popup.go), keyed
 	// by the popup.toggle binding's name arg. Lazily allocated on first
 	// toggle. Hidden popups keep their pty alive — that's the point.
 	popups map[string]*Popup
+}
+
+// switchTab records the outgoing tab for tab.last and moves to tab i.
+// Every user-driven tab switch routes through here; forced moves (a tab
+// dying under the cursor in removeTab) don't — flipping "back" to a tab the
+// user never chose to leave would be noise.
+func (s *Session) switchTab(i int) {
+	if i == s.active {
+		return
+	}
+	s.lastTab = s.tabs[s.active]
+	s.active = i
 }
 
 type Model struct {
@@ -229,6 +250,10 @@ type Model struct {
 	active   int
 	prefix   bool
 	w, h     int
+
+	// lastSession is the previously active session, for the session.last
+	// flip. Pointer for the same index-shift reasons as Session.lastTab.
+	lastSession *Session
 
 	// overlays is the popup stack — bottom→top, last element is on top.
 	// The topmost interactive (OwnsInput) overlay receives diverted
@@ -263,6 +288,12 @@ type ptyReadMsg struct {
 type prefixMsg struct{}
 type prefixFollowMsg struct{ b byte }
 type directKeyMsg struct{ b byte }
+
+// prefixFollowSeqMsg / directSeqMsg are the multi-byte (escape sequence)
+// counterparts of prefixFollowMsg / directKeyMsg — seq is the raw byte
+// string the pump matched against the keymap's sequence index.
+type prefixFollowSeqMsg struct{ seq string }
+type directSeqMsg struct{ seq string }
 type wheelMsg struct{ up bool }
 type snapMsg struct{}
 type pollMsg struct{}
@@ -284,6 +315,16 @@ type mousePressMsg struct {
 // pane, unless we swallowed the matching press."
 type mouseReleaseMsg struct {
 	data []byte
+}
+
+// switchSession records the outgoing session for session.last and moves to
+// session i. Same routing rule as Session.switchTab.
+func (m *Model) switchSession(i int) {
+	if i == m.active {
+		return
+	}
+	m.lastSession = m.sessions[m.active]
+	m.active = i
 }
 
 func (m *Model) curTab() *Tab {
@@ -333,6 +374,10 @@ func (m *Model) closePane(p *Pane) (tea.Model, tea.Cmd) {
 				if t.active == p {
 					t.active = t.root.leaves()[0].pane
 				}
+				// The visible pane set changed: drop any zoom and resize the
+				// survivors into the space the dead pane gave back.
+				t.zoomed = false
+				m.applyLayoutSizes()
 				if si == m.active && ti == s.active {
 					m.syncActive()
 				}
@@ -352,6 +397,9 @@ func (m *Model) closePane(p *Pane) (tea.Model, tea.Cmd) {
 // was looking at stays focused. The caller is responsible for the tab's ptys.
 func (m *Model) removeTab(si, ti int) tea.Cmd {
 	s := m.sessions[si]
+	if s.lastTab == s.tabs[ti] {
+		s.lastTab = nil
+	}
 	s.tabs = append(s.tabs[:ti], s.tabs[ti+1:]...)
 	if len(s.tabs) > 0 {
 		if ti < s.active {
@@ -369,6 +417,9 @@ func (m *Model) removeTab(si, ti int) tea.Cmd {
 	// session is no longer reachable.
 	for _, pu := range s.popups {
 		pu.pane.pty.Close()
+	}
+	if m.lastSession == s {
+		m.lastSession = nil
 	}
 	m.sessions = append(m.sessions[:si], m.sessions[si+1:]...)
 	if len(m.sessions) == 0 {

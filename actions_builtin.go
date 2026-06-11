@@ -29,6 +29,11 @@ func init() {
 		Run:  func(c *Ctx) tea.Cmd { return c.M.actPrevTab() },
 	})
 	registerAction(&Action{
+		ID: "tab.last", Label: "Last tab", Group: "tabs",
+		Help: "Flip to the previously active tab in the current session.",
+		Run:  func(c *Ctx) tea.Cmd { return c.M.actLastTab() },
+	})
+	registerAction(&Action{
 		ID: "tab.rename", Label: "Rename tab", Group: "tabs",
 		Help:  "Rename the current tab. Enter to confirm, Esc to cancel; empty clears.",
 		Flags: FlagOwnsInput,
@@ -74,10 +79,28 @@ func init() {
 		Help: "Move focus to the next pane in the current tab (wraps).",
 		Run:  func(c *Ctx) tea.Cmd { return c.M.actCyclePane() },
 	})
+	// pane.select takes {dir = "left"|"right"|"up"|"down"} like pane.resize:
+	// the four arrow bindings each pass a direction, and the overlay shows the
+	// per-direction label derived at parse time.
+	registerAction(&Action{
+		ID: "pane.select", Label: "Select pane", Group: "panes",
+		Help:  "Move focus to the nearest pane in the given direction.",
+		Parse: parseSelectArgs,
+		Run: func(c *Ctx) tea.Cmd {
+			a := c.Args.(*selectArgs)
+			return c.M.actSelectDir(a.dir, a.step)
+		},
+	})
 	registerAction(&Action{
 		ID: "pane.kill", Label: "Kill pane", Group: "panes",
 		Help: "Close the active pane. If it's the only pane, the tab closes too (cascades).",
 		Run:  func(c *Ctx) tea.Cmd { return c.M.actKillPane() },
+	})
+	registerAction(&Action{
+		ID: "pane.zoom", Label: "Zoom pane", Group: "panes",
+		Help:   "Toggle the active pane to full size. The layout is untouched — unzoom restores it.",
+		Status: zoomStatus,
+		Run:    func(c *Ctx) tea.Cmd { return c.M.actZoomPane() },
 	})
 
 	// pane.resize takes {dir = "left"|"right"|"up"|"down"}. The four
@@ -103,6 +126,11 @@ func init() {
 		ID: "session.next", Label: "Next session", Group: "sessions",
 		Help: "Switch to the next session (wraps).",
 		Run:  func(c *Ctx) tea.Cmd { return c.M.actNextSession() },
+	})
+	registerAction(&Action{
+		ID: "session.last", Label: "Last session", Group: "sessions",
+		Help: "Flip to the previously active session.",
+		Run:  func(c *Ctx) tea.Cmd { return c.M.actLastSession() },
 	})
 	registerAction(&Action{
 		ID: "session.pick", Label: "Pick session", Group: "sessions",
@@ -176,22 +204,44 @@ type resizeArgs struct {
 }
 
 func parseResizeArgs(raw map[string]any) (any, error) {
+	dir, step, err := parseDirStep("pane.resize", raw)
+	if err != nil {
+		return nil, err
+	}
+	return &resizeArgs{dir: dir, step: step}, nil
+}
+
+type selectArgs struct {
+	dir  splitDir
+	step int
+}
+
+func parseSelectArgs(raw map[string]any) (any, error) {
+	dir, step, err := parseDirStep("pane.select", raw)
+	if err != nil {
+		return nil, err
+	}
+	return &selectArgs{dir: dir, step: step}, nil
+}
+
+// parseDirStep maps a {dir = "left"|"right"|"up"|"down"} arg to the (axis,
+// step) pair shared by pane.resize and pane.select: splitV is the left/right
+// axis, splitH up/down; step is -1 toward left/up, +1 toward right/down. id
+// names the calling action so a bad config value points at the right binding.
+func parseDirStep(id string, raw map[string]any) (splitDir, int, error) {
 	d, ok := raw["dir"].(string)
 	if !ok {
-		return nil, fmt.Errorf("pane.resize: missing dir (left/right/up/down)")
+		return 0, 0, fmt.Errorf("%s: missing dir (left/right/up/down)", id)
 	}
-	a := &resizeArgs{}
 	switch d {
 	case "left":
-		a.dir, a.step = splitV, -1
+		return splitV, -1, nil
 	case "right":
-		a.dir, a.step = splitV, +1
+		return splitV, +1, nil
 	case "up":
-		a.dir, a.step = splitH, -1
+		return splitH, -1, nil
 	case "down":
-		a.dir, a.step = splitH, +1
-	default:
-		return nil, fmt.Errorf("pane.resize: dir must be left/right/up/down, got %q", d)
+		return splitH, +1, nil
 	}
-	return a, nil
+	return 0, 0, fmt.Errorf("%s: dir must be left/right/up/down, got %q", id, d)
 }

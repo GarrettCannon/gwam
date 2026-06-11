@@ -292,6 +292,136 @@ func (k Key) LegacyBytes() ([]byte, bool) {
 	return []byte{b}, true
 }
 
+// csiLetterFinal is the CSI final byte for keys encoded as \x1b[<fin>
+// (plain) / \x1bO<fin> (application cursor mode) / \x1b[1;<mods><fin>
+// (modified): arrows, home, end.
+var csiLetterFinal = map[KeyCode]byte{
+	KeyUp:    'A',
+	KeyDown:  'B',
+	KeyRight: 'C',
+	KeyLeft:  'D',
+	KeyHome:  'H',
+	KeyEnd:   'F',
+}
+
+// tildeNum is the parameter for keys encoded as \x1b[<n>~ (plain) /
+// \x1b[<n>;<mods>~ (modified): insert/delete/page keys and F5..F12.
+var tildeNum = map[KeyCode]int{
+	KeyInsert:   2,
+	KeyDelete:   3,
+	KeyPageUp:   5,
+	KeyPageDown: 6,
+	KeyF5:       15,
+	KeyF6:       17,
+	KeyF7:       18,
+	KeyF8:       19,
+	KeyF9:       20,
+	KeyF10:      21,
+	KeyF11:      23,
+	KeyF12:      24,
+}
+
+// xtermMods is the modifier parameter in modified CSI sequences:
+// 1 + (shift=1 | alt=2 | ctrl=4).
+func (k Key) xtermMods() int {
+	m := 1
+	if k.Mods&ModShift != 0 {
+		m += 1
+	}
+	if k.Mods&ModAlt != 0 {
+		m += 2
+	}
+	if k.Mods&ModCtrl != 0 {
+		m += 4
+	}
+	return m
+}
+
+// legacyEncodings returns every byte sequence a terminal may emit for k —
+// the dispatch table buildKeymap indexes by. Single-byte keys return their
+// LegacyBytes form; multi-byte keys return each known legacy variant:
+//
+//   - arrows / home / end — CSI letter (\x1b[A), SS3 letter (\x1bOA,
+//     application cursor mode), and the modified form (\x1b[1;<m>A)
+//   - home / end also have tilde variants (\x1b[1~ / \x1b[4~)
+//   - F1..F4 — SS3 P..S, the legacy tilde forms (\x1b[11~..\x1b[14~), and
+//     modified \x1b[1;<m>P..S
+//   - insert / delete / pgup / pgdn / F5..F12 — \x1b[<n>~ and \x1b[<n>;<m>~
+//   - shift-tab — \x1b[Z
+//   - alt + any single-byte base — ESC-prefixed (\x1b<byte>), except bases
+//     that collide with sequence introducers ('[' = CSI, 'O' = SS3, Esc)
+//
+// Returns nil for keys with no known encoding; buildKeymap surfaces that as
+// a config error. Kitty-encoded keystrokes don't appear here — the input
+// pump decodes them back to these legacy forms before matching.
+func (k Key) legacyEncodings() [][]byte {
+	if bs, ok := k.LegacyBytes(); ok {
+		return [][]byte{bs}
+	}
+
+	mods := k.xtermMods()
+
+	if fin, ok := csiLetterFinal[k.Code]; ok {
+		if mods == 1 {
+			out := [][]byte{
+				{0x1b, '[', fin},
+				{0x1b, 'O', fin},
+			}
+			switch k.Code {
+			case KeyHome:
+				out = append(out, []byte("\x1b[1~"))
+			case KeyEnd:
+				out = append(out, []byte("\x1b[4~"))
+			}
+			return out
+		}
+		return [][]byte{[]byte(fmt.Sprintf("\x1b[1;%d%c", mods, fin))}
+	}
+
+	if k.Code >= KeyF1 && k.Code <= KeyF4 {
+		fin := byte('P' + k.Code - KeyF1)
+		tilde := 11 + int(k.Code-KeyF1)
+		if mods == 1 {
+			return [][]byte{
+				{0x1b, 'O', fin},
+				[]byte(fmt.Sprintf("\x1b[%d~", tilde)),
+			}
+		}
+		return [][]byte{
+			[]byte(fmt.Sprintf("\x1b[1;%d%c", mods, fin)),
+			[]byte(fmt.Sprintf("\x1b[%d;%d~", tilde, mods)),
+		}
+	}
+
+	if n, ok := tildeNum[k.Code]; ok {
+		if mods == 1 {
+			return [][]byte{[]byte(fmt.Sprintf("\x1b[%d~", n))}
+		}
+		return [][]byte{[]byte(fmt.Sprintf("\x1b[%d;%d~", n, mods))}
+	}
+
+	if k.Code == KeyTab && k.Mods == ModShift {
+		return [][]byte{[]byte("\x1b[Z")}
+	}
+
+	// alt + a key with a single-byte form: ESC prefix. The base must not be
+	// a sequence introducer — \x1b[ is CSI, \x1bO is SS3, \x1b\x1b is hostile
+	// to every downstream parser.
+	if k.Mods&ModAlt != 0 {
+		base := k
+		base.Mods &^= ModAlt
+		if bs, ok := base.LegacyBytes(); ok && len(bs) == 1 {
+			b := bs[0]
+			if b == '[' || b == 'O' || b == 0x1b {
+				return nil
+			}
+			return [][]byte{{0x1b, b}}
+		}
+	}
+
+	return nil
+}
+
 // String returns the canonical text form of k. Modifier order is fixed
 // (ctrl-, alt-, shift-) so Key values that compare equal also stringify
 // equal — useful for config-check output and round-trip testing.

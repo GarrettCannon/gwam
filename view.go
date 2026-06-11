@@ -23,6 +23,10 @@ var (
 			Bold(true).
 			Foreground(lipgloss.Color("16")).
 			Background(lipgloss.Color("214"))
+	zoomChip = lipgloss.NewStyle().
+			Bold(true).
+			Foreground(lipgloss.Color("231")).
+			Background(lipgloss.Color("63"))
 
 	sessionChip = lipgloss.NewStyle().
 			Padding(0, 1).
@@ -38,6 +42,8 @@ var (
 
 	paneDivider = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("238"))
+	paneDividerActive = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("220"))
 
 	prefixPanel = lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
@@ -72,9 +78,6 @@ func (m *Model) bodyHeight() int {
 	return h
 }
 
-// Rect is an integer (x, y, w, h) — origin top-left, h and w in cells.
-type Rect struct{ X, Y, W, H int }
-
 // chipRect is the screen-x range [start, end) of a single tab chip in the
 // tab-bar row. Used by Update to route tab-bar clicks to actJumpTab.
 type chipRect struct{ start, end int }
@@ -107,12 +110,17 @@ func tabBarLayout(m *Model) (bar string, chipRects []chipRect) {
 	}
 	rightBar := tabsStr + " " + sessionStr + " " + prefixStr
 	var leading int
+	if s.tabs[s.active].zoomed {
+		zoomStr := zoomChip.Render(" ZOOM ")
+		rightBar = zoomStr + " " + rightBar
+		leading += lipgloss.Width(zoomStr) + 1
+	}
 	if p := m.focusPane(); p.scrollOff > 0 {
 		max := p.vt.Scrollback().Len()
 		scrollStr := scrollChip.Render(fmt.Sprintf(" SCROLL %d/%d ", p.scrollOff, max))
 		rightBar = scrollStr + " " + rightBar
 		// +1 for the space separator between scrollStr and the rest.
-		leading = lipgloss.Width(scrollStr) + 1
+		leading += lipgloss.Width(scrollStr) + 1
 	}
 	rightW := lipgloss.Width(rightBar)
 	gap := m.w - rightW
@@ -130,71 +138,6 @@ func tabBarLayout(m *Model) (bar string, chipRects []chipRect) {
 	return bar, chipRects
 }
 
-// dividers describes each separator a split contributes, in absolute coords.
-type dividerSpec struct {
-	x, y, length int
-	vertical     bool
-}
-
-// layoutGeometry walks layout l, sized into (x, y, w, h), and returns a
-// rectangle per leaf pane plus the divider run each split contributes.
-// Dividers eat 1 row/col between siblings; ratios are clamped so neither
-// child collapses to zero. Rects and dividers come out of the same walk so
-// the split arithmetic can never disagree between the two.
-func layoutGeometry(l *Layout, x, y, w, h int) (map[*Pane]Rect, []dividerSpec) {
-	rects := map[*Pane]Rect{}
-	var divs []dividerSpec
-	var walk func(n *Layout, x, y, w, h int)
-	walk = func(n *Layout, x, y, w, h int) {
-		if n.IsLeaf() {
-			rects[n.pane] = Rect{x, y, w, h}
-			return
-		}
-		switch n.split {
-		case splitV:
-			// Reserve 1 column for the divider, then split the rest by ratio.
-			avail := w - 1
-			if avail < 2 {
-				avail = 2
-			}
-			wa := int(float64(avail) * n.ratio)
-			if wa < 1 {
-				wa = 1
-			}
-			if wa > avail-1 {
-				wa = avail - 1
-			}
-			divs = append(divs, dividerSpec{x: x + wa, y: y, length: h, vertical: true})
-			walk(n.a, x, y, wa, h)
-			walk(n.b, x+wa+1, y, avail-wa, h)
-		case splitH:
-			avail := h - 1
-			if avail < 2 {
-				avail = 2
-			}
-			ha := int(float64(avail) * n.ratio)
-			if ha < 1 {
-				ha = 1
-			}
-			if ha > avail-1 {
-				ha = avail - 1
-			}
-			divs = append(divs, dividerSpec{x: x, y: y + ha, length: w, vertical: false})
-			walk(n.a, x, y, w, ha)
-			walk(n.b, x, y+ha+1, w, avail-ha)
-		}
-	}
-	walk(l, x, y, w, h)
-	return rects, divs
-}
-
-// computeRects is layoutGeometry for callers that only need the pane rects
-// (layout sizing, mouse hit-testing).
-func computeRects(l *Layout, x, y, w, h int) map[*Pane]Rect {
-	rects, _ := layoutGeometry(l, x, y, w, h)
-	return rects
-}
-
 func (m *Model) View() tea.View {
 	if m.w == 0 || m.h == 0 || len(m.sessions) == 0 {
 		return tea.NewView("")
@@ -204,8 +147,8 @@ func (m *Model) View() tea.View {
 	tabBar, _ := tabBarLayout(m)
 
 	inner := m.bodyHeight()
-	rects, divs := layoutGeometry(t.root, 0, 0, m.w, inner)
-	body := renderBody(rects, divs, m.w, inner)
+	rects, divs := t.geometry(m.w, inner)
+	body := renderBody(rects, divs, m.w, inner, t.active)
 	base := tabBar + "\n" + body
 
 	// Session popup floats over the body, below the overlay stack (so a
@@ -289,7 +232,10 @@ func (m *Model) View() tea.View {
 // renderBody composites the body area: a blank base of `inner` rows × w cols,
 // each pane's content layered at its rect, dividers between siblings as
 // further layers. rects and divs come from the same layoutGeometry walk.
-func renderBody(rects map[*Pane]Rect, divs []dividerSpec, w, inner int) string {
+// Divider cells abutting another divider render as junctions (├ ┤ ┬ ┴ ┼),
+// and cells bordering the active pane's rect render in the focus color so
+// the focused pane reads at a glance.
+func renderBody(rects map[*Pane]Rect, divs []dividerSpec, w, inner int, active *Pane) string {
 	// Base: solid blank canvas so the compositor's output has exact dimensions.
 	blankRow := strings.Repeat(" ", w)
 	baseRows := make([]string, inner)
@@ -300,17 +246,64 @@ func renderBody(rects map[*Pane]Rect, divs []dividerSpec, w, inner int) string {
 
 	layers := []*lipgloss.Layer{lipgloss.NewLayer(baseStr).X(0).Y(0).Z(0)}
 
+	arms := dividerArms(divs)
+	activeRect, hasActive := rects[active]
+	// hot reports whether a divider cell runs alongside the active pane — the
+	// four border dividers, each bounded to the pane's own span on the
+	// perpendicular axis. Corners are excluded on purpose: a corner cell sits
+	// on a divider that continues past the pane (a shared junction), so lighting
+	// it would bleed the highlight one cell beyond the pane's edge.
+	hot := func(x, y int) bool {
+		if !hasActive {
+			return false
+		}
+		r := activeRect
+		onSide := (x == r.X-1 || x == r.X+r.W) && y >= r.Y && y < r.Y+r.H
+		onEnd := (y == r.Y-1 || y == r.Y+r.H) && x >= r.X && x < r.X+r.W
+		return onSide || onEnd
+	}
+	style := func(active bool) lipgloss.Style {
+		if active {
+			return paneDividerActive
+		}
+		return paneDivider
+	}
+
 	// Dividers first (Z=1) so pane content (Z=2) overdraws any stray join cells.
 	for _, d := range divs {
 		var s string
 		if d.vertical {
+			// One cell per row; each row carries its own style.
 			rows := make([]string, d.length)
 			for i := range rows {
-				rows[i] = "│"
+				x, y := d.x, d.y+i
+				rows[i] = style(hot(x, y)).Render(string(dividerRune(arms[cellPos{x, y}])))
 			}
-			s = paneDivider.Render(strings.Join(rows, "\n"))
+			s = strings.Join(rows, "\n")
 		} else {
-			s = paneDivider.Render(strings.Repeat("─", d.length))
+			// Group contiguous same-style cells into runs so a span renders
+			// as a handful of styled segments, not one SGR per cell.
+			var b strings.Builder
+			runStart := 0
+			runHot := hot(d.x, d.y)
+			var run strings.Builder
+			flush := func(end int) {
+				if end > runStart {
+					b.WriteString(style(runHot).Render(run.String()))
+					run.Reset()
+					runStart = end
+				}
+			}
+			for i := 0; i < d.length; i++ {
+				x, y := d.x+i, d.y
+				if h := hot(x, y); h != runHot {
+					flush(i)
+					runHot = h
+				}
+				run.WriteRune(dividerRune(arms[cellPos{x, y}]))
+			}
+			flush(d.length)
+			s = b.String()
 		}
 		layers = append(layers, lipgloss.NewLayer(s).X(d.x).Y(d.y).Z(1))
 	}

@@ -25,7 +25,9 @@ func (m *Model) applyLayoutSizes() {
 	inner := m.bodyHeight()
 	for _, s := range m.sessions {
 		for _, t := range s.tabs {
-			rects := computeRects(t.root, 0, 0, m.w, inner)
+			// Zoomed tabs resize only the zoomed pane; the hidden panes keep
+			// their last layout size and get their winch on unzoom.
+			rects, _ := t.geometry(m.w, inner)
 			for pane, r := range rects {
 				resizePane(pane, r.W, r.H)
 			}
@@ -138,7 +140,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		t := m.curTab()
-		rects := computeRects(t.root, 0, 0, m.w, m.bodyHeight())
+		rects, _ := t.geometry(m.w, m.bodyHeight())
 		var target *Pane
 		for pane, r := range rects {
 			if bx >= r.X && bx < r.X+r.W && by >= r.Y && by < r.Y+r.H {
@@ -193,6 +195,13 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case prefixFollowSeqMsg:
+		m.prefix = false
+		if b := defaultKeymap.LookupPrefixSeq(msg.seq); b != nil {
+			return m, b.Action.Run(&Ctx{M: m, Args: b.Args})
+		}
+		return m, nil
+
 	case directKeyMsg:
 		// Pump matched a byte to a direct binding. Dispatch like prefix-
 		// follow but without the prefix-mode toggle since direct never
@@ -200,6 +209,13 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// can't fire a stale action — defaultKeymap is replaced once at
 		// startup so this is just future-proofing.
 		if b := defaultKeymap.LookupDirect(msg.b); b != nil {
+			return m, b.Action.Run(&Ctx{M: m, Args: b.Args})
+		}
+		return m, nil
+
+	case directSeqMsg:
+		// Sequence flavor of directKeyMsg — same defensive re-lookup.
+		if b := defaultKeymap.LookupDirectSeq(msg.seq); b != nil {
 			return m, b.Action.Run(&Ctx{M: m, Args: b.Args})
 		}
 		return m, nil

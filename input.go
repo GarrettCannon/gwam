@@ -201,6 +201,10 @@ func startInputPump(
 					}
 				}
 				return true
+			case 'O':
+				// SS3 (arrows in application cursor mode, F1-F4) is exactly
+				// three bytes; only the final byte can be missing.
+				return i+2 >= len(c)
 			case ']':
 				for j := i + 2; j < len(c); j++ {
 					if c[j] == 0x07 {
@@ -213,6 +217,38 @@ func startInputPump(
 				return true
 			}
 			return false
+		}
+		// completeSeqLen is incompleteSeqTail's complement: the length of the
+		// complete CSI/SS3/OSC sequence at c[i], or 0 if c[i] doesn't start
+		// one (or it's incomplete). A lone ESC or ESC+printable is not a
+		// "sequence" here — that's the Esc key or an alt chord, which have
+		// their own handling.
+		completeSeqLen := func(c []byte, i int) int {
+			if c[i] != 0x1b || i+1 >= len(c) {
+				return 0
+			}
+			switch c[i+1] {
+			case '[':
+				for j := i + 2; j < len(c); j++ {
+					if c[j] >= 0x40 && c[j] <= 0x7e {
+						return j - i + 1
+					}
+				}
+			case 'O':
+				if i+2 < len(c) {
+					return 3
+				}
+			case ']':
+				for j := i + 2; j < len(c); j++ {
+					if c[j] == 0x07 {
+						return j - i + 1
+					}
+					if c[j] == 0x1b && j+1 < len(c) && c[j+1] == '\\' {
+						return j - i + 2
+					}
+				}
+			}
+			return 0
 		}
 		// Carry-over cap: a tail that keeps growing past this without a
 		// terminator isn't a real control sequence (e.g. cat-ing a binary
@@ -277,14 +313,57 @@ func startInputPump(
 						continue
 					}
 					armed = false
+					// Multi-byte follow keys (arrows, F-keys, alt-*) bound
+					// through the prefix — match the raw sequence first.
+					if bd, slen := defaultKeymap.MatchPrefixSeq(chunk, i); bd != nil {
+						if bd.Action.Flags&FlagOwnsInput != 0 {
+							overlayOwnsInput.Store(true)
+						}
+						p.Send(prefixFollowSeqMsg{seq: string(chunk[i : i+slen])})
+						i += slen
+						flush = i
+						continue
+					}
 					b := chunk[i]
 					consumed := 1
 					// kitty-encoded follow keys (rare, but ghostty may send
 					// e.g. \x1b[27;1u for plain ESC) — decode in place so the
 					// trailing CSI bytes don't leak to the pty.
-					if klen, repl := matchKittyCSIu(chunk, i); klen > 0 && len(repl) == 1 {
-						b = repl[0]
-						consumed = klen
+					if klen, repl := matchKittyCSIu(chunk, i); klen > 0 {
+						switch {
+						case len(repl) == 1:
+							b = repl[0]
+							consumed = klen
+						case len(repl) == 2:
+							// alt-modified kitty follow key — its decoded
+							// legacy form (ESC + byte) may be seq-bound.
+							if bd := defaultKeymap.LookupPrefixSeq(string(repl)); bd != nil {
+								if bd.Action.Flags&FlagOwnsInput != 0 {
+									overlayOwnsInput.Store(true)
+								}
+								p.Send(prefixFollowSeqMsg{seq: string(repl)})
+							} else {
+								// Unbound alt chord cancels the prefix; the
+								// model still needs to hear about it.
+								p.Send(prefixFollowMsg{b: 0x1b})
+							}
+							i += klen
+							flush = i
+							continue
+						default: // undecodable codepoint — swallow, cancel
+							p.Send(prefixFollowMsg{b: 0x1b})
+							i += klen
+							flush = i
+							continue
+						}
+					} else if slen := completeSeqLen(chunk, i); slen > 0 {
+						// A complete-but-unbound escape sequence cancels the
+						// prefix and is swallowed whole — forwarding its tail
+						// as text would litter the shell with "[A"-style junk.
+						p.Send(prefixFollowMsg{b: 0x1b})
+						i += slen
+						flush = i
+						continue
 					}
 					// Optimistically arm overlay-owns-input in the pump when
 					// the follow-byte is bound to an action that opens an
@@ -321,17 +400,44 @@ func startInputPump(
 					flush = i
 					continue
 				}
+				// Direct-bound escape sequences (arrows, F-keys, alt-*).
+				// After skipDeviceReport so \x1b[?…/OSC responses can't
+				// shadow-match, before the kitty decoder so a raw legacy
+				// sequence is matched as-is.
+				if !overlayOwnsInput.Load() {
+					if bd, slen := defaultKeymap.MatchDirectSeq(chunk, i); bd != nil {
+						writePty(chunk[flush:i])
+						if bd.Action.Flags&FlagOwnsInput != 0 {
+							overlayOwnsInput.Store(true)
+						}
+						p.Send(directSeqMsg{seq: string(chunk[i : i+slen])})
+						i += slen
+						flush = i
+						continue
+					}
+				}
 				if klen, repl := matchKittyCSIu(chunk, i); klen > 0 {
 					writePty(chunk[flush:i])
-					// Direct binding on the decoded byte takes priority
-					// over forwarding — same precedence as the legacy-
-					// byte branch below. Only checked for single-byte
-					// replacements; multi-byte (Alt-prefixed) replacements
-					// aren't bindable in v1 anyway.
+					// Direct binding on the decoded form takes priority over
+					// forwarding — same precedence as the legacy-byte branch
+					// below. Single-byte decodes go through tryDirect;
+					// two-byte decodes (alt chords, ESC + byte) through the
+					// sequence index.
 					if len(repl) == 1 && tryDirect(repl[0]) {
 						i += klen
 						flush = i
 						continue
+					}
+					if len(repl) == 2 && !overlayOwnsInput.Load() {
+						if bd := defaultKeymap.LookupDirectSeq(string(repl)); bd != nil {
+							if bd.Action.Flags&FlagOwnsInput != 0 {
+								overlayOwnsInput.Store(true)
+							}
+							p.Send(directSeqMsg{seq: string(repl)})
+							i += klen
+							flush = i
+							continue
+						}
 					}
 					// writePty handles overlay routing; for live pty we want
 					// the same path so backspace/enter encoded by kitty land

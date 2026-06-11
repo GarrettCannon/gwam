@@ -62,24 +62,33 @@ func (b *Binding) EffectiveGroup() string {
 
 // Keymap is the dispatch table. bindings preserves registration order
 // (the overlay walks it); byPrefixByte and byDirectByte are the fast
-// indices for the prefix-follow path and the direct-keystroke path in
-// the stdin pump. Both indices live here so the pump only sees one type.
+// indices for single-byte keys; byPrefixSeq and byDirectSeq hold the
+// multi-byte escape-sequence encodings (arrows, F-keys, alt-*) keyed by
+// the raw byte string. All indices live here so the pump only sees one
+// type. One Binding may appear under several seq keys — a key like "up"
+// has both CSI and SS3 encodings.
 type Keymap struct {
 	bindings     []*Binding
 	byPrefixByte map[byte]*Binding
 	byDirectByte map[byte]*Binding
+	byPrefixSeq  map[string]*Binding
+	byDirectSeq  map[string]*Binding
 }
 
 // buildKeymap resolves each spec against the action registry, runs the
-// action's Parse on its raw args, encodes the trigger Key to legacy bytes,
-// and indexes by byte into prefix or direct table per Trigger.Direct.
-// Errors out on unknown action ID, parse failure, args supplied to a
-// no-arg action, multi-byte / unencodable trigger key, duplicate trigger,
-// or direct binding that conflicts with the built-in Ctrl-A prefix.
+// action's Parse on its raw args, encodes the trigger Key to its legacy
+// byte encodings, and indexes each into the prefix or direct table per
+// Trigger.Direct — single-byte encodings into the byte index, escape
+// sequences into the seq index. Errors out on unknown action ID, parse
+// failure, args supplied to a no-arg action, unencodable trigger key,
+// duplicate trigger, or direct binding that conflicts with the built-in
+// Ctrl-A prefix.
 func buildKeymap(specs []BindingSpec) (*Keymap, error) {
 	k := &Keymap{
 		byPrefixByte: map[byte]*Binding{},
 		byDirectByte: map[byte]*Binding{},
+		byPrefixSeq:  map[string]*Binding{},
+		byDirectSeq:  map[string]*Binding{},
 	}
 	for _, s := range specs {
 		a, ok := actions[s.ActionID]
@@ -96,14 +105,10 @@ func buildKeymap(specs []BindingSpec) (*Keymap, error) {
 		} else if len(s.Args) > 0 {
 			return nil, fmt.Errorf("key %s: action %q takes no args", s.Trigger.Key, s.ActionID)
 		}
-		bytes, ok := s.Trigger.Key.LegacyBytes()
-		if !ok {
-			return nil, fmt.Errorf("key %s: not encodable as legacy bytes (alt-*, arrows, F-keys not yet supported)", s.Trigger.Key)
+		encs := s.Trigger.Key.legacyEncodings()
+		if len(encs) == 0 {
+			return nil, fmt.Errorf("key %s: no known terminal encoding", s.Trigger.Key)
 		}
-		if len(bytes) != 1 {
-			return nil, fmt.Errorf("key %s: multi-byte triggers not yet supported", s.Trigger.Key)
-		}
-		b := bytes[0]
 		bd := &Binding{
 			Trigger: s.Trigger,
 			Action:  a,
@@ -111,22 +116,30 @@ func buildKeymap(specs []BindingSpec) (*Keymap, error) {
 			Group:   s.Group,
 			Label:   s.Label,
 		}
-		var (
-			idx  map[byte]*Binding
-			kind string
-		)
+		kind := "prefix"
+		byteIdx, seqIdx := k.byPrefixByte, k.byPrefixSeq
 		if s.Trigger.Direct {
-			if b == 0x01 {
-				return nil, fmt.Errorf("key %s: conflicts with built-in Ctrl-A prefix", s.Trigger.Key)
+			kind = "direct"
+			byteIdx, seqIdx = k.byDirectByte, k.byDirectSeq
+		}
+		for _, e := range encs {
+			if len(e) == 1 {
+				b := e[0]
+				if s.Trigger.Direct && b == 0x01 {
+					return nil, fmt.Errorf("key %s: conflicts with built-in Ctrl-A prefix", s.Trigger.Key)
+				}
+				if _, dup := byteIdx[b]; dup {
+					return nil, fmt.Errorf("duplicate %s binding for key %s", kind, s.Trigger.Key)
+				}
+				byteIdx[b] = bd
+				continue
 			}
-			idx, kind = k.byDirectByte, "direct"
-		} else {
-			idx, kind = k.byPrefixByte, "prefix"
+			seq := string(e)
+			if _, dup := seqIdx[seq]; dup {
+				return nil, fmt.Errorf("duplicate %s binding for key %s", kind, s.Trigger.Key)
+			}
+			seqIdx[seq] = bd
 		}
-		if _, dup := idx[b]; dup {
-			return nil, fmt.Errorf("duplicate %s binding for key %s", kind, s.Trigger.Key)
-		}
-		idx[b] = bd
 		k.bindings = append(k.bindings, bd)
 	}
 	return k, nil
@@ -144,6 +157,40 @@ func (k *Keymap) LookupPrefix(b byte) *Binding {
 // without the prefix, or nil. Same concurrency guarantees as LookupPrefix.
 func (k *Keymap) LookupDirect(b byte) *Binding {
 	return k.byDirectByte[b]
+}
+
+// matchSeq returns the longest registered escape sequence that prefixes
+// c[i:], with its length, or (nil, 0). The seq maps hold a handful of
+// entries at most, so a linear scan beats building a trie.
+func matchSeq(idx map[string]*Binding, c []byte, i int) (*Binding, int) {
+	var best *Binding
+	bestLen := 0
+	for seq, bd := range idx {
+		if len(seq) > bestLen && i+len(seq) <= len(c) && string(c[i:i+len(seq)]) == seq {
+			best, bestLen = bd, len(seq)
+		}
+	}
+	return best, bestLen
+}
+
+// MatchPrefixSeq / MatchDirectSeq are the pump-side sequence matchers —
+// same concurrency guarantees as LookupPrefix.
+func (k *Keymap) MatchPrefixSeq(c []byte, i int) (*Binding, int) {
+	return matchSeq(k.byPrefixSeq, c, i)
+}
+
+func (k *Keymap) MatchDirectSeq(c []byte, i int) (*Binding, int) {
+	return matchSeq(k.byDirectSeq, c, i)
+}
+
+// LookupPrefixSeq / LookupDirectSeq re-resolve a matched sequence in
+// Update, mirroring LookupPrefix/LookupDirect for the byte paths.
+func (k *Keymap) LookupPrefixSeq(seq string) *Binding {
+	return k.byPrefixSeq[seq]
+}
+
+func (k *Keymap) LookupDirectSeq(seq string) *Binding {
+	return k.byDirectSeq[seq]
 }
 
 // applyOverrides overlays a user spec slice on top of defaults. For each

@@ -40,18 +40,25 @@ func makeDefaultBindings() []BindingSpec {
 		{Trigger: pre("c"), ActionID: "tab.new"},
 		{Trigger: pre("n"), ActionID: "tab.next"},
 		{Trigger: pre("p"), ActionID: "tab.prev"},
+		{Trigger: pre("space"), ActionID: "tab.last"},
 		{Trigger: pre(","), ActionID: "tab.rename"},
 		{Trigger: pre("&"), ActionID: "tab.kill"},
 		{Trigger: pre("|"), ActionID: "pane.split-v"},
 		{Trigger: pre("_"), ActionID: "pane.split-h"},
 		{Trigger: pre("o"), ActionID: "pane.cycle"},
+		{Trigger: pre("left"), ActionID: "pane.select", Args: map[string]any{"dir": "left"}, Label: "Select left"},
+		{Trigger: pre("right"), ActionID: "pane.select", Args: map[string]any{"dir": "right"}, Label: "Select right"},
+		{Trigger: pre("up"), ActionID: "pane.select", Args: map[string]any{"dir": "up"}, Label: "Select up"},
+		{Trigger: pre("down"), ActionID: "pane.select", Args: map[string]any{"dir": "down"}, Label: "Select down"},
 		{Trigger: pre("x"), ActionID: "pane.kill"},
+		{Trigger: pre("z"), ActionID: "pane.zoom"},
 		{Trigger: pre("h"), ActionID: "pane.resize", Args: map[string]any{"dir": "left"}, Label: "Resize left"},
 		{Trigger: pre("l"), ActionID: "pane.resize", Args: map[string]any{"dir": "right"}, Label: "Resize right"},
 		{Trigger: pre("k"), ActionID: "pane.resize", Args: map[string]any{"dir": "up"}, Label: "Resize up"},
 		{Trigger: pre("j"), ActionID: "pane.resize", Args: map[string]any{"dir": "down"}, Label: "Resize down"},
 		{Trigger: pre("s"), ActionID: "session.new"},
 		{Trigger: pre("w"), ActionID: "session.next"},
+		{Trigger: pre("L"), ActionID: "session.last"},
 		{Trigger: pre("W"), ActionID: "session.pick"},
 		{Trigger: pre("$"), ActionID: "session.rename"},
 		{Trigger: pre("T"), ActionID: "tab.pick"},
@@ -90,22 +97,40 @@ func (m *Model) actNewTab() tea.Cmd {
 	}
 	s := m.sessions[m.active]
 	s.tabs = append(s.tabs, newSinglePaneTab(p, ""))
-	s.active = len(s.tabs) - 1
+	s.switchTab(len(s.tabs) - 1)
 	m.syncActive()
 	return readPty(p)
 }
 
 func (m *Model) actNextTab() tea.Cmd {
 	s := m.sessions[m.active]
-	s.active = (s.active + 1) % len(s.tabs)
+	s.switchTab((s.active + 1) % len(s.tabs))
 	m.syncActive()
 	return nil
 }
 
 func (m *Model) actPrevTab() tea.Cmd {
 	s := m.sessions[m.active]
-	s.active = (s.active - 1 + len(s.tabs)) % len(s.tabs)
+	s.switchTab((s.active - 1 + len(s.tabs)) % len(s.tabs))
 	m.syncActive()
+	return nil
+}
+
+// actLastTab flips to the previously active tab in the current session —
+// tmux's last-window. No-op until two tabs have been visited, or when the
+// remembered tab has since been killed.
+func (m *Model) actLastTab() tea.Cmd {
+	s := m.sessions[m.active]
+	if s.lastTab == nil {
+		return nil
+	}
+	for i, t := range s.tabs {
+		if t == s.lastTab {
+			s.switchTab(i)
+			m.syncActive()
+			return nil
+		}
+	}
 	return nil
 }
 
@@ -118,14 +143,30 @@ func (m *Model) actNewSession() tea.Cmd {
 		name: fmt.Sprintf("s%d", len(m.sessions)),
 		tabs: []*Tab{newSinglePaneTab(p, "")},
 	})
-	m.active = len(m.sessions) - 1
+	m.switchSession(len(m.sessions) - 1)
 	m.syncActive()
 	return readPty(p)
 }
 
 func (m *Model) actNextSession() tea.Cmd {
-	m.active = (m.active + 1) % len(m.sessions)
+	m.switchSession((m.active + 1) % len(m.sessions))
 	m.syncActive()
+	return nil
+}
+
+// actLastSession flips to the previously active session — tmux's
+// last-session. Same no-op rules as actLastTab.
+func (m *Model) actLastSession() tea.Cmd {
+	if m.lastSession == nil {
+		return nil
+	}
+	for i, s := range m.sessions {
+		if s == m.lastSession {
+			m.switchSession(i)
+			m.syncActive()
+			return nil
+		}
+	}
 	return nil
 }
 
@@ -191,7 +232,7 @@ func (m *Model) actPickSession() tea.Cmd {
 		target := it.Data.(*Session)
 		for i, s := range m.sessions {
 			if s == target {
-				m.active = i
+				m.switchSession(i)
 				m.syncActive()
 				return
 			}
@@ -222,7 +263,7 @@ func (m *Model) actPickTab() tea.Cmd {
 		target := it.Data.(*Tab)
 		for i, t := range s.tabs {
 			if t == target {
-				s.active = i
+				s.switchTab(i)
 				m.syncActive()
 				return
 			}
@@ -234,7 +275,7 @@ func (m *Model) actPickTab() tea.Cmd {
 func (m *Model) actJumpTab(idx int) tea.Cmd {
 	s := m.sessions[m.active]
 	if idx < len(s.tabs) {
-		s.active = idx
+		s.switchTab(idx)
 		m.syncActive()
 	}
 	return nil
@@ -258,6 +299,8 @@ func (m *Model) split(dir splitDir) tea.Cmd {
 	if err != nil {
 		return nil
 	}
+	// Splitting while zoomed unzooms — the new pane must be visible.
+	t.zoomed = false
 	leaf.splitLeaf(dir, p)
 	t.active = p
 	m.syncActive()
@@ -265,13 +308,38 @@ func (m *Model) split(dir splitDir) tea.Cmd {
 	return readPty(p)
 }
 
+// actZoomPane toggles rendering the active pane at full body size. The
+// split tree is untouched — unzooming restores the exact layout. No-op on
+// single-pane tabs (the pane already fills the body).
+func (m *Model) actZoomPane() tea.Cmd {
+	t := m.curTab()
+	if len(t.panes()) < 2 {
+		return nil
+	}
+	t.zoomed = !t.zoomed
+	m.applyLayoutSizes()
+	return nil
+}
+
+func zoomStatus(m *Model) string {
+	if m.curTab().zoomed {
+		return "(on)"
+	}
+	return ""
+}
+
 // actCyclePane moves focus to the next leaf in layout order, wrapping at the
-// end. Single-pane tabs are a no-op.
+// end. Single-pane tabs are a no-op. Cycling while zoomed unzooms first —
+// otherwise focus would move to a pane that isn't on screen.
 func (m *Model) actCyclePane() tea.Cmd {
 	t := m.curTab()
 	panes := t.panes()
 	if len(panes) < 2 {
 		return nil
+	}
+	if t.zoomed {
+		t.zoomed = false
+		m.applyLayoutSizes()
 	}
 	idx := 0
 	for i, p := range panes {
@@ -285,12 +353,35 @@ func (m *Model) actCyclePane() tea.Cmd {
 	return nil
 }
 
+// actSelectDir moves focus to the nearest pane in the given direction, using
+// the same dir/step encoding as resize (splitV/-1 left … splitH/+1 down).
+// No-op on single-pane tabs or when no pane lies that way. Selecting while
+// zoomed unzooms first, otherwise focus would land on a pane that's off screen.
+func (m *Model) actSelectDir(dir splitDir, step int) tea.Cmd {
+	t := m.curTab()
+	if len(t.panes()) < 2 {
+		return nil
+	}
+	if t.zoomed {
+		t.zoomed = false
+		m.applyLayoutSizes()
+	}
+	rects, _ := t.geometry(m.w, m.bodyHeight())
+	target := paneInDir(rects, t.active, dir, step)
+	if target == nil || target == t.active {
+		return nil
+	}
+	t.active = target
+	m.syncActive()
+	return nil
+}
+
 // actKillPane closes the active pane. If it was the last pane in the tab,
-// closePane cascades up (tab → session → quit).
+// closePane cascades up (tab → session → quit). closePane resizes the
+// surviving panes itself.
 func (m *Model) actKillPane() tea.Cmd {
 	p := m.curPane()
 	_, cmd := m.closePane(p)
-	m.applyLayoutSizes()
 	return cmd
 }
 
