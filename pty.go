@@ -263,23 +263,34 @@ func writeMouseMode(on bool) {
 	}
 }
 
-// pollCmd re-arms a periodic pollMsg used to refresh each pane's foreground
-// process name. 500ms keeps the strip feeling reactive without sysctl thrash;
-// the per-pane work (one ioctl + one sysctl) is cheap.
+// pollCmd re-arms the fast poll. It refreshes only the focused pane (one ioctl
+// + one sysctl, microseconds), so the cursor-shape reset when a program like
+// neovim exits feels prompt. Every other pane rides the slow tick below.
 func pollCmd() tea.Cmd {
-	return tea.Tick(500*time.Millisecond, func(time.Time) tea.Msg { return pollMsg{} })
+	return tea.Tick(100*time.Millisecond, func(time.Time) tea.Msg { return pollMsg{} })
 }
 
-// refreshPane is run off the main loop (the cwd lookup is ~10ms on macOS).
-// It asks the kernel for the pty's foreground process group: if it isn't the
-// shell, that's the command label. It also reads the shell's cwd — this is
-// what makes the idle label work even when the shell doesn't emit OSC 7.
-// Both fgCmdOfPgid and cwdOfPID are platform-specific (see platform_*.go).
-func refreshPane(p *Pane) tea.Msg {
-	out := paneRefreshMsg{pane: p}
+// cwdPollCmd re-arms the slow all-pane poll. cwdOfPID shells out to lsof (a
+// fork + exec, ~10ms on macOS), so it stays infrequent to avoid thrash; OSC 7
+// keeps cwd fresh for shells that emit it. It also refreshes every pane's fg
+// label, since the fast tick only looks at the focused pane.
+func cwdPollCmd() tea.Cmd {
+	return tea.Tick(500*time.Millisecond, func(time.Time) tea.Msg { return cwdPollMsg{} })
+}
+
+// refreshFg asks the kernel for the pty's foreground process group: if it isn't
+// the shell, that's the command label (empty means the shell is in front).
+// fgCmdOfPgid is platform-specific (see platform_*.go).
+func refreshFg(p *Pane) tea.Msg {
+	out := paneFgMsg{pane: p}
 	if pgid, err := unix.IoctlGetInt(int(p.pty.Fd()), unix.TIOCGPGRP); err == nil && pgid > 0 && pgid != p.shellPID {
 		out.fgCmd = fgCmdOfPgid(pgid)
 	}
-	out.cwd = cwdOfPID(p.shellPID)
 	return out
+}
+
+// refreshCwd reads the shell's cwd — what makes the idle label work even when
+// the shell doesn't emit OSC 7. cwdOfPID is platform-specific (see platform_*.go).
+func refreshCwd(p *Pane) tea.Msg {
+	return paneCwdMsg{pane: p, cwd: cwdOfPID(p.shellPID)}
 }

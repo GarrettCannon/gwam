@@ -7,15 +7,20 @@ import (
 func (m *Model) Init() tea.Cmd {
 	// Kick off the read loop for every initial pane — once a ptyReadMsg
 	// arrives, Update rearms readPty(pane) itself.
-	cmds := []tea.Cmd{pollCmd()}
+	cmds := []tea.Cmd{pollCmd(), cwdPollCmd()}
+	m.eachPane(func(p *Pane) { cmds = append(cmds, readPty(p)) })
+	return tea.Batch(cmds...)
+}
+
+// eachPane calls fn for every pane across all sessions and tabs.
+func (m *Model) eachPane(fn func(*Pane)) {
 	for _, s := range m.sessions {
 		for _, t := range s.tabs {
 			for _, p := range t.panes() {
-				cmds = append(cmds, readPty(p))
+				fn(p)
 			}
 		}
 	}
-	return tea.Batch(cmds...)
 }
 
 // applyLayoutSizes walks every tab and resizes each pane to the rect it
@@ -85,21 +90,39 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case pollMsg:
-		// Fan out lsof+sysctl per pane as concurrent tea.Cmds so the main loop
-		// stays responsive. Each returns a paneRefreshMsg consumed below.
+		// Fast tick: refresh only the focused pane's foreground process — the
+		// one pane whose cursor is rendered, so its DECSCUSR reset on program
+		// exit feels prompt. Background panes ride the slow tick below.
 		cmds := []tea.Cmd{pollCmd()}
-		for _, s := range m.sessions {
-			for _, t := range s.tabs {
-				for _, p := range t.panes() {
-					p := p
-					cmds = append(cmds, func() tea.Msg { return refreshPane(p) })
-				}
-			}
+		if p := m.focusPane(); p != nil {
+			cmds = append(cmds, func() tea.Msg { return refreshFg(p) })
 		}
 		return m, tea.Batch(cmds...)
 
-	case paneRefreshMsg:
+	case cwdPollMsg:
+		// Slow tick: fan out the expensive lsof cwd lookup per pane, plus an fg
+		// refresh so panes the fast tick skips still get a (less prompt) label.
+		cmds := []tea.Cmd{cwdPollCmd()}
+		m.eachPane(func(p *Pane) {
+			cmds = append(cmds,
+				func() tea.Msg { return refreshFg(p) },
+				func() tea.Msg { return refreshCwd(p) },
+			)
+		})
+		return m, tea.Batch(cmds...)
+
+	case paneFgMsg:
+		// fgCmd clearing means the foreground returned to the shell — a program
+		// like neovim that set a cursor shape via DECSCUSR has exited. Drop the
+		// tracked style so View falls back to suppression (CSI 0 SP q) and the
+		// host terminal restores its user-configured cursor.
+		if msg.pane.fgCmd != "" && msg.fgCmd == "" {
+			msg.pane.cursorStyleSet = false
+		}
 		msg.pane.fgCmd = msg.fgCmd
+		return m, nil
+
+	case paneCwdMsg:
 		if msg.cwd != "" {
 			msg.pane.cwd = msg.cwd
 		}

@@ -306,11 +306,15 @@ type prefixFollowSeqMsg struct{ seq string }
 type directSeqMsg struct{ seq string }
 type wheelMsg struct{ up bool }
 type snapMsg struct{}
-type pollMsg struct{}
-type paneRefreshMsg struct {
+type pollMsg struct{}    // fast tick: refresh each pane's foreground process
+type cwdPollMsg struct{} // slow tick: refresh each pane's cwd (lsof)
+type paneFgMsg struct {
 	pane  *Pane
 	fgCmd string
-	cwd   string
+}
+type paneCwdMsg struct {
+	pane *Pane
+	cwd  string
 }
 
 // mousePressMsg is a button-down SGR event with the original byte sequence
