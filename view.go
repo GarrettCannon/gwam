@@ -472,15 +472,23 @@ func renderMenuPanel(m *Model, lvl *menuLevel, header, hint string) string {
 	// picker overlay's footer.
 	out = append(out, "", prefixHint.Render(hint))
 
-	// Pad to the shared content width, but never truncate: a long breadcrumb
-	// header or hint can exceed the binding rows, so grow to fit it.
+	// Pad every line to a shared width (never truncating: a long breadcrumb
+	// header or hint can exceed the binding rows, so grow to fit it), then let
+	// the bordered panel auto-size around it. Padding the content rather than
+	// forcing the panel's Width keeps us clear of how lipgloss folds border +
+	// padding into Width — setting Width to the content width would shrink the
+	// text area by the frame and wrap the longest row.
 	width := contentW
 	for _, l := range out {
 		if w := lipgloss.Width(l); w > width {
 			width = w
 		}
 	}
-	return prefixPanel.Width(width).Render(strings.Join(out, "\n"))
+	pad := lipgloss.NewStyle().Width(width)
+	for i, l := range out {
+		out[i] = pad.Render(l)
+	}
+	return prefixPanel.Render(strings.Join(out, "\n"))
 }
 
 // collapseKeys formats a Key list for one overlay row. Multiple

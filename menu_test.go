@@ -1,6 +1,7 @@
 package main
 
 import (
+	"sync/atomic"
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
@@ -283,6 +284,28 @@ func TestMenuPanelStableWidth(t *testing.T) {
 	wd := lipgloss.Width(renderMenuPanel(m, km.menus["deep"], "» PREFIX", "esc"))
 	if wr != wt || wt != wd {
 		t.Errorf("panel widths differ across levels: root=%d tabs=%d deep=%d", wr, wt, wd)
+	}
+}
+
+// No binding row should wrap — including rows carrying a status suffix like
+// the mouse mode "(off)". Renders the real default panels (a zero Model is
+// safe: mouseStatus reads an atomic and zoomStatus guards the empty model).
+func TestMenuPanelNoWrap(t *testing.T) {
+	// A minimal but valid model: zoomStatus reads curTab().zoomed and
+	// mouseStatus reads the mouseOn atomic.
+	m := &Model{
+		sessions: []*Session{{tabs: []*Tab{{}}}},
+		mouseOn:  &atomic.Bool{},
+	}
+	for _, name := range []string{"", "tabs", "panes", "sessions"} {
+		lvl := defaultKeymap.menus[name]
+		panel := renderMenuPanel(m, lvl, "» PREFIX C-A", "⌫/esc cancel")
+		// content rows = title + blank + bindings + blank + hint; the bordered,
+		// padded panel adds 4 frame rows (1 border + 1 padding, top and bottom).
+		want := (2 + len(menuLines(m, lvl)) + 2) + 4
+		if got := lipgloss.Height(panel); got != want {
+			t.Errorf("menu %q panel height %d, want %d — a row wrapped", name, got, want)
+		}
 	}
 }
 
