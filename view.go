@@ -393,15 +393,14 @@ func renderPrefixPanel(m *Model) string {
 	return renderMenuPanel(m, defaultKeymap.menus[""], "» PREFIX C-A", "esc to cancel")
 }
 
-// renderMenuPanel draws one which-key level as the floating panel: a cyan
-// header (title or breadcrumb), then one "<keys> → <label>" line per binding
-// in registration order. Bindings that resolve to the same label collapse
-// into one row with their keys merged — tab.jump's 1..9 render as "1-9";
-// pane.resize's four directions stay separate because each overrides Label.
-// A live status suffix (mouse "(on)", zoom) is appended when the action
-// provides one. Shared by the root prefix panel and WhichKeyOverlay so the
-// two always look identical.
-func renderMenuPanel(m *Model, lvl *menuLevel, header, hint string) string {
+type menuLine struct{ key, label string }
+
+// menuLines builds the "<keys> → <label>" rows for one level: bindings that
+// resolve to the same label collapse into one row with their keys merged —
+// tab.jump's 1..9 render as "1-9"; pane.resize's four directions stay separate
+// because each overrides Label. A live status suffix (mouse "(on)", zoom) is
+// appended when the action provides one.
+func menuLines(m *Model, lvl *menuLevel) []menuLine {
 	type row struct {
 		keys   []Key
 		label  string
@@ -419,34 +418,69 @@ func renderMenuPanel(m *Model, lvl *menuLevel, header, hint string) string {
 		seen[label] = r
 		rows = append(rows, r)
 	}
-
-	type line struct{ key, label string }
-	var lines []line
+	lines := make([]menuLine, 0, len(rows))
 	for _, r := range rows {
 		label := r.label
 		if r.status != nil {
 			label += " " + r.status(m)
 		}
-		lines = append(lines, line{key: collapseKeys(r.keys), label: label})
+		lines = append(lines, menuLine{key: collapseKeys(r.keys), label: label})
 	}
+	return lines
+}
 
-	// right-align keys in their own column so the arrows line up
-	keyW := 3
-	for _, ln := range lines {
-		if w := len(ln.key); w > keyW {
-			keyW = w
+// menuGeometry computes the key-column width and content width shared by every
+// which-key panel, taken as the max across all menu levels. Rendering every
+// level at these dimensions means switching groups (or stepping in/out of a
+// submenu) doesn't resize the panel or shift the arrow column.
+func menuGeometry(m *Model) (keyW, contentW int) {
+	keyW = 3
+	for _, lvl := range defaultKeymap.menus {
+		for _, ln := range menuLines(m, lvl) {
+			if w := lipgloss.Width(ln.key); w > keyW {
+				keyW = w
+			}
 		}
 	}
 	keyCol := lipgloss.NewStyle().Width(keyW).Align(lipgloss.Right)
+	for _, lvl := range defaultKeymap.menus {
+		for _, ln := range menuLines(m, lvl) {
+			w := lipgloss.Width(keyCol.Render(prefixKey.Render(ln.key)) + prefixArrow.Render(" → ") + ln.label)
+			if w > contentW {
+				contentW = w
+			}
+		}
+	}
+	return keyW, contentW
+}
+
+// renderMenuPanel draws one which-key level as the floating panel: a cyan
+// header (title or breadcrumb), one "<keys> → <label>" line per binding, and a
+// hint footer. Every level renders at the same key-column and content width
+// (see menuGeometry) so the panel holds its size as the user moves between
+// groups. Shared by the root prefix panel and WhichKeyOverlay so the two
+// always look identical.
+func renderMenuPanel(m *Model, lvl *menuLevel, header, hint string) string {
+	keyW, contentW := menuGeometry(m)
+	keyCol := lipgloss.NewStyle().Width(keyW).Align(lipgloss.Right)
 
 	out := []string{prefixPanelTitle.Render(header), ""}
-	for _, ln := range lines {
+	for _, ln := range menuLines(m, lvl) {
 		out = append(out, keyCol.Render(prefixKey.Render(ln.key))+prefixArrow.Render(" → ")+ln.label)
 	}
 	// Hint sits at the bottom, below a blank spacer — same placement as the
 	// picker overlay's footer.
 	out = append(out, "", prefixHint.Render(hint))
-	return prefixPanel.Render(strings.Join(out, "\n"))
+
+	// Pad to the shared content width, but never truncate: a long breadcrumb
+	// header or hint can exceed the binding rows, so grow to fit it.
+	width := contentW
+	for _, l := range out {
+		if w := lipgloss.Width(l); w > width {
+			width = w
+		}
+	}
+	return prefixPanel.Width(width).Render(strings.Join(out, "\n"))
 }
 
 // collapseKeys formats a Key list for one overlay row. Multiple

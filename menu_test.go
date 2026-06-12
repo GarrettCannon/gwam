@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 )
 
 // test.noop is a side-effect-free action so menu tests can exercise dispatch
@@ -263,6 +264,27 @@ func TestWhichKeyConfigurableBackKey(t *testing.T) {
 // m_or_nil returns a Model safe for HandleKey paths that don't dispatch
 // pty-spawning actions (navigation only).
 func m_or_nil() *Model { return &Model{} }
+
+// Every level should render at the same panel width so switching groups
+// doesn't resize the panel. (testMenuSpecs uses status-free actions, so a
+// zero Model is safe here.)
+func TestMenuPanelStableWidth(t *testing.T) {
+	km, err := buildKeymap(testMenuSpecs())
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	old := defaultKeymap
+	defaultKeymap = km
+	defer func() { defaultKeymap = old }()
+
+	m := &Model{}
+	wr := lipgloss.Width(renderMenuPanel(m, km.menus[""], "» PREFIX", "esc"))
+	wt := lipgloss.Width(renderMenuPanel(m, km.menus["tabs"], "» PREFIX", "esc"))
+	wd := lipgloss.Width(renderMenuPanel(m, km.menus["deep"], "» PREFIX", "esc"))
+	if wr != wt || wt != wd {
+		t.Errorf("panel widths differ across levels: root=%d tabs=%d deep=%d", wr, wt, wd)
+	}
+}
 
 // The shipped defaults should build with the three standard groups present.
 func TestDefaultKeymapMenus(t *testing.T) {
