@@ -439,13 +439,13 @@ func renderMenuPanel(m *Model, lvl *menuLevel, header, hint string) string {
 	}
 	keyCol := lipgloss.NewStyle().Width(keyW).Align(lipgloss.Right)
 
-	out := []string{
-		prefixPanelTitle.Render(header) + "   " + prefixHint.Render(hint),
-		"",
-	}
+	out := []string{prefixPanelTitle.Render(header), ""}
 	for _, ln := range lines {
 		out = append(out, keyCol.Render(prefixKey.Render(ln.key))+prefixArrow.Render(" → ")+ln.label)
 	}
+	// Hint sits at the bottom, below a blank spacer — same placement as the
+	// picker overlay's footer.
+	out = append(out, "", prefixHint.Render(hint))
 	return prefixPanel.Render(strings.Join(out, "\n"))
 }
 

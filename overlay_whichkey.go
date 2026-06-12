@@ -61,9 +61,9 @@ func (w *WhichKeyOverlay) Render(m *Model) string {
 		}
 		crumb += " › " + strings.TrimPrefix(lvl.title, "+")
 	}
-	hint := "esc/backspace: cancel"
+	hint := "⌫/esc cancel"
 	if len(w.stack) > 1 {
-		hint = "backspace: up a level · esc: cancel"
+		hint = "⌫ up a level   esc cancel"
 	}
 	return renderMenuPanel(m, w.cur(), crumb, hint)
 }
