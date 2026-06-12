@@ -174,10 +174,10 @@ func TestWhichKeyOverlayNavigation(t *testing.T) {
 
 	m := &Model{}
 
-	// Esc at the root level closes.
+	// Esc at the only level closes.
 	o := NewWhichKeyOverlay(km.menus["tabs"])
 	if closed, _ := o.HandleKey([]byte{0x1b}, m); !closed {
-		t.Errorf("esc at root level should close")
+		t.Errorf("esc should close")
 	}
 
 	// Unbound key is ignored (stays open).
@@ -192,7 +192,7 @@ func TestWhichKeyOverlayNavigation(t *testing.T) {
 		t.Errorf("running an action should close")
 	}
 
-	// Descend into a subgroup, then Esc/backspace pop back without closing.
+	// Descend into a subgroup, then backspace pops back without closing.
 	o = NewWhichKeyOverlay(km.menus["tabs"])
 	if closed, _ := o.HandleKey([]byte{'g'}, m); closed {
 		t.Fatalf("descending into +deep should not close")
@@ -206,11 +206,63 @@ func TestWhichKeyOverlayNavigation(t *testing.T) {
 	if len(o.stack) != 1 || o.cur().name != "tabs" {
 		t.Fatalf("after pop, stack should be [tabs], got %v", o.stack)
 	}
-	// Now Esc at the (root) level closes.
+	// Backspace at the last level closes.
+	if closed, _ := o.HandleKey([]byte{0x7f}, m); !closed {
+		t.Errorf("backspace at the last level should close")
+	}
+
+	// Esc cancels the whole menu from depth in one press, rather than
+	// stepping up a level.
+	o = NewWhichKeyOverlay(km.menus["tabs"])
+	o.HandleKey([]byte{'g'}, m) // -> [tabs deep]
 	if closed, _ := o.HandleKey([]byte{0x1b}, m); !closed {
-		t.Errorf("esc back at root level should close")
+		t.Errorf("esc from a subgroup should cancel the whole menu")
 	}
 }
+
+// With the root level at the bottom of the stack (how actOpenMenu builds it),
+// backspace from the first submenu returns to the root panel instead of
+// closing — that's "back to the prefix state".
+func TestWhichKeyBackToRoot(t *testing.T) {
+	km, err := buildKeymap(testMenuSpecs())
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	o := NewWhichKeyOverlay(km.menus[""], km.menus["tabs"])
+	if closed, _ := o.HandleKey([]byte{0x7f}, m_or_nil()); closed {
+		t.Fatalf("backspace from +tabs should return to root, not close")
+	}
+	if o.cur().name != "" {
+		t.Fatalf("should be back at root level, got %q", o.cur().name)
+	}
+	// Now at root, backspace closes.
+	if closed, _ := o.HandleKey([]byte{0x7f}, m_or_nil()); !closed {
+		t.Errorf("backspace at root should close")
+	}
+}
+
+// A configured extra back key steps up a level just like backspace.
+func TestWhichKeyConfigurableBackKey(t *testing.T) {
+	km, err := buildKeymap(testMenuSpecs())
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	old := menuBackSeqs
+	menuBackSeqs = map[string]bool{"b": true}
+	defer func() { menuBackSeqs = old }()
+
+	o := NewWhichKeyOverlay(km.menus[""], km.menus["tabs"])
+	if closed, _ := o.HandleKey([]byte{'b'}, m_or_nil()); closed {
+		t.Fatalf("configured back key from +tabs should return to root, not close")
+	}
+	if o.cur().name != "" {
+		t.Fatalf("should be back at root level, got %q", o.cur().name)
+	}
+}
+
+// m_or_nil returns a Model safe for HandleKey paths that don't dispatch
+// pty-spawning actions (navigation only).
+func m_or_nil() *Model { return &Model{} }
 
 // The shipped defaults should build with the three standard groups present.
 func TestDefaultKeymapMenus(t *testing.T) {

@@ -225,16 +225,17 @@ func (m *Model) actKillSession() tea.Cmd {
 	return cmd
 }
 
-// actOpenMenu pushes a which-key overlay scoped to the named submenu. A
-// leader pointing at an undefined group is rejected at keymap-build time, so
-// a nil level here would only mean a programming error — guard anyway and
-// no-op rather than panic on a keystroke.
+// actOpenMenu pushes a which-key overlay scoped to the named submenu, with the
+// root level beneath it so backspace from the submenu returns to the root
+// panel rather than closing. A leader pointing at an undefined group is
+// rejected at keymap-build time, so a nil level here would only mean a
+// programming error — guard anyway and no-op rather than panic on a keystroke.
 func (m *Model) actOpenMenu(group string) tea.Cmd {
 	lvl := defaultKeymap.menus[group]
 	if lvl == nil {
 		return nil
 	}
-	m.pushOverlay(NewWhichKeyOverlay(lvl))
+	m.pushOverlay(NewWhichKeyOverlay(defaultKeymap.menus[""], lvl))
 	return nil
 }
 

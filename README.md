@@ -98,10 +98,15 @@ or renamed the way a tab or session is:
 | h / l     | move nearest vertical divider left / right (5%)     |
 | j / k     | move nearest horizontal divider down / up (5%)      |
 
-Inside a submenu, **esc** or **backspace** steps back up a level (and closes
-the menu at the top level). Also, **outside the prefix**: `ctrl-t` directly
-opens the tab picker — see "Direct bindings" below for the tradeoff this
-carries, and for binding your own one-key accelerators that skip the menus.
+Inside a submenu, **backspace** steps back up one level — from the first
+submenu that returns you to the root panel (the same view the armed prefix
+shows), so you can pick a different group without starting over; from the
+root it closes. **esc** cancels the whole menu in one press. You can bind an
+extra back key with `[whichkey] back` in config (backspace always works).
+
+Also, **outside the prefix**: `ctrl-t` directly opens the tab picker — see
+"Direct bindings" below for the tradeoff this carries, and for binding your
+own one-key accelerators that skip the menus.
 
 While the prefix is armed, a yellow which-key panel pops up in the top right
 showing the root level; opening a group replaces it with that submenu's keys.
@@ -145,6 +150,10 @@ direct = true
 # rename a default group's title
 [menus]
 sessions = "+workspaces"
+
+# an extra "up a level" key inside which-key menus (backspace always works)
+[whichkey]
+back = "ctrl-h"
 ```
 
 Merge semantics: each `[[binding]]` whose `(key, direct)` tuple matches a
@@ -179,7 +188,10 @@ Fields:
 - `direct` — optional (default false). See "Direct bindings" below.
 
 The optional `[menus]` table maps a submenu name to its display title; names
-not listed fall back to `+<name>`.
+not listed fall back to `+<name>`. The optional `[whichkey]` table's `back`
+key adds a second "up a level" key inside the menus (backspace is always
+that) — it takes priority over any binding on the same key in a menu, so
+pick one you don't use inside the menus.
 
 ### Direct bindings
 
@@ -410,9 +422,10 @@ Built on `lipgloss.Compositor` + `Layer`. A small `Overlay` interface
   arrow / Ctrl-P,N navigation, prefix-match filter. Powers `prefix s space`
   (sessions) and `prefix t space` / `ctrl-t` (tabs).
 - **Which-key** (`overlay_whichkey.go`) — the drill-down submenu opened by a
-  `menu.open` leader. Holds a stack of `menuLevel`s; resolves each follow
-  key against the current level, descends into nested groups, and pops on
-  Esc/Backspace.
+  `menu.open` leader. Holds a stack of `menuLevel`s (root at the bottom);
+  resolves each follow key against the current level, descends into nested
+  groups, steps up one level on Backspace (back to the root panel), and
+  cancels the whole menu on Esc.
 - **Confirm** (`overlay_confirm.go`) — y/n prompt with a callback. No
   default binding yet.
 - **Notice** (`overlay_notice.go`) — passive auto-dismissing toast in the

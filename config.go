@@ -17,7 +17,16 @@ type Config struct {
 	// Menus maps a which-key submenu name to a display title, overriding the
 	// built-in menuTitles (e.g. menus.tabs = "+windows"). Names not listed
 	// fall back to "+<name>".
-	Menus map[string]string `toml:"menus"`
+	Menus    map[string]string `toml:"menus"`
+	WhichKey WhichKeyConfig    `toml:"whichkey"`
+}
+
+// WhichKeyConfig is the [whichkey] table. Back names an extra key that steps
+// up one level inside a submenu (back to the prefix root from the first
+// level); Backspace always does this regardless. Parsed by ParseKey, so it
+// accepts the same syntax as a binding key.
+type WhichKeyConfig struct {
+	Back string `toml:"back"`
 }
 
 // ConfigBinding is one [[binding]] entry. Fields mirror BindingSpec but in
@@ -143,6 +152,18 @@ func applyUserConfig() error {
 	}
 	if cfg == nil {
 		return nil
+	}
+	// The extra which-key back key applies independently of bindings.
+	if cfg.WhichKey.Back != "" {
+		k, err := ParseKey(cfg.WhichKey.Back)
+		if err != nil {
+			return fmt.Errorf("whichkey.back %q: %w", cfg.WhichKey.Back, err)
+		}
+		seqs := map[string]bool{}
+		for _, e := range k.legacyEncodings() {
+			seqs[string(e)] = true
+		}
+		menuBackSeqs = seqs
 	}
 	// Menu-title overrides apply to both the panel render (via menuTitle, read
 	// at keymap-build time) and any rebuilt level, so merge them before
