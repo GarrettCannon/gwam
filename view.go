@@ -60,6 +60,10 @@ var (
 			Foreground(lipgloss.Color("240"))
 	prefixHint = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("240"))
+	// prefixActive recolors a menu row whose toggle (mouse, zoom) is on.
+	prefixActive = lipgloss.NewStyle().
+			Bold(true).
+			Foreground(lipgloss.Color("114"))
 )
 
 // tabBarH is the height of the tab bar in rows. Every piece of vertical
@@ -393,13 +397,18 @@ func renderPrefixPanel(m *Model) string {
 	return renderMenuPanel(m, defaultKeymap.menus[""], "» PREFIX C-A", "esc to cancel")
 }
 
-type menuLine struct{ key, label string }
+type menuLine struct {
+	key    string
+	label  string
+	active bool // the action's toggle is currently on — render highlighted
+}
 
 // menuLines builds the "<keys> → <label>" rows for one level: bindings that
 // resolve to the same label collapse into one row with their keys merged —
 // tab.jump's 1..9 render as "1-9"; pane.resize's four directions stay separate
-// because each overrides Label. A live status suffix (mouse "(on)", zoom) is
-// appended when the action provides one.
+// because each overrides Label. A row whose action is a toggle that's
+// currently on is marked active so the panel can highlight it — the label text
+// itself never carries on/off state, so the row width is stable.
 func menuLines(m *Model, lvl *menuLevel) []menuLine {
 	type row struct {
 		keys   []Key
@@ -420,11 +429,8 @@ func menuLines(m *Model, lvl *menuLevel) []menuLine {
 	}
 	lines := make([]menuLine, 0, len(rows))
 	for _, r := range rows {
-		label := r.label
-		if r.status != nil {
-			label += " " + r.status(m)
-		}
-		lines = append(lines, menuLine{key: collapseKeys(r.keys), label: label})
+		active := r.status != nil && r.status(m) != ""
+		lines = append(lines, menuLine{key: collapseKeys(r.keys), label: r.label, active: active})
 	}
 	return lines
 }
@@ -432,7 +438,8 @@ func menuLines(m *Model, lvl *menuLevel) []menuLine {
 // menuGeometry computes the key-column width and content width shared by every
 // which-key panel, taken as the max across all menu levels. Rendering every
 // level at these dimensions means switching groups (or stepping in/out of a
-// submenu) doesn't resize the panel or shift the arrow column.
+// submenu) doesn't resize the panel or shift the arrow column. Labels carry no
+// runtime state, so these widths don't change as toggles flip.
 func menuGeometry(m *Model) (keyW, contentW int) {
 	keyW = 3
 	for _, lvl := range defaultKeymap.menus {
@@ -466,7 +473,13 @@ func renderMenuPanel(m *Model, lvl *menuLevel, header, hint string) string {
 
 	out := []string{prefixPanelTitle.Render(header), ""}
 	for _, ln := range menuLines(m, lvl) {
-		out = append(out, keyCol.Render(prefixKey.Render(ln.key))+prefixArrow.Render(" → ")+ln.label)
+		label := ln.label
+		if ln.active {
+			// Toggle is on — recolor the label (same text, same width) so its
+			// state reads at a glance without a width-changing "(on)" suffix.
+			label = prefixActive.Render(label)
+		}
+		out = append(out, keyCol.Render(prefixKey.Render(ln.key))+prefixArrow.Render(" → ")+label)
 	}
 	// Hint sits at the bottom, below a blank spacer — same placement as the
 	// picker overlay's footer.

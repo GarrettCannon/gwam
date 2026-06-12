@@ -309,6 +309,28 @@ func TestMenuPanelNoWrap(t *testing.T) {
 	}
 }
 
+// Toggling a status (mouse on/off) must change neither the panel width nor its
+// height: the row is highlighted, not re-texted, so nothing reflows.
+func TestMenuPanelStatusDoesNotResize(t *testing.T) {
+	root := defaultKeymap.menus[""]
+	mouse := &atomic.Bool{}
+	m := &Model{sessions: []*Session{{tabs: []*Tab{{}}}}, mouseOn: mouse}
+
+	mouse.Store(false)
+	off := renderMenuPanel(m, root, "» PREFIX C-A", "esc")
+	mouse.Store(true)
+	on := renderMenuPanel(m, root, "» PREFIX C-A", "esc")
+
+	if lipgloss.Width(off) != lipgloss.Width(on) {
+		t.Errorf("panel width changed with mouse toggle: off=%d on=%d",
+			lipgloss.Width(off), lipgloss.Width(on))
+	}
+	if lipgloss.Height(off) != lipgloss.Height(on) {
+		t.Errorf("panel height changed with mouse toggle: off=%d on=%d",
+			lipgloss.Height(off), lipgloss.Height(on))
+	}
+}
+
 // The shipped defaults should build with the three standard groups present.
 func TestDefaultKeymapMenus(t *testing.T) {
 	for _, name := range []string{"", "tabs", "panes", "sessions"} {

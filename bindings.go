@@ -127,11 +127,15 @@ func makeDefaultBindings() []BindingSpec {
 // call through. They stayed methods on *Model (vs free funcs taking *Ctx)
 // to keep this commit pure refactor: only call-sites moved, not bodies.
 
+// mouseStatus and zoomStatus report whether their toggle is currently on, as
+// a non-empty string (the value is unused — the panel highlights the row when
+// it's non-empty rather than printing it, so the row width doesn't change as
+// the toggle flips).
 func mouseStatus(m *Model) string {
 	if m.mouseOn.Load() {
-		return "(on)"
+		return "on"
 	}
-	return "(off)"
+	return ""
 }
 
 func (m *Model) actNewTab() tea.Cmd {
@@ -408,7 +412,7 @@ func (m *Model) actZoomPane() tea.Cmd {
 
 func zoomStatus(m *Model) string {
 	if m.curTab().zoomed {
-		return "(on)"
+		return "on"
 	}
 	return ""
 }

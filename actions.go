@@ -38,8 +38,11 @@ const (
 //   - Label  — overlay row text ("Resize left").
 //   - Help   — full sentence for help surfaces.
 //   - Group  — overlay section ("tabs", "panes", ...); "" = general.
-//   - Status — optional live suffix (e.g. mouse "(on)"). Reads Model, not
-//     Ctx, because the panel renders bindings without firing them.
+//   - Status — optional "is this toggle on" probe: returns a non-empty string
+//     when on, "" when off. The panel highlights the row when it's non-empty
+//     (the value itself isn't shown, so row width doesn't shift as it flips).
+//     Reads Model, not Ctx, because the panel renders bindings without firing
+//     them.
 //   - Flags  — see ActionFlag.
 //   - Parse  — converts a raw TOML arg map into the action's typed args
 //     struct, validating up-front. nil means "takes no args";
