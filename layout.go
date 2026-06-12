@@ -64,6 +64,40 @@ func layoutGeometry(l *Layout, x, y, w, h int) (map[*Pane]Rect, []dividerSpec) {
 	return rects, divs
 }
 
+// paneHPad is the blank columns kept between a pane's content and a vertical
+// divider it borders, so text doesn't sit flush against the line. Only sides
+// abutting a vertical divider are inset — screen edges and horizontal dividers
+// stay flush. The divider itself doesn't move, so junctions stay intact.
+const paneHPad = 1
+
+// contentRect insets r horizontally by paneHPad on each side that borders a
+// vertical divider. It's what the pty is sized to and what the body/cursor
+// render against; the full rect still drives dividers and hit-testing.
+func contentRect(r Rect, divs []dividerSpec) Rect {
+	if abutsVDivider(divs, r.X-1, r.Y, r.H) {
+		r.X += paneHPad
+		r.W -= paneHPad
+	}
+	if abutsVDivider(divs, r.X+r.W, r.Y, r.H) {
+		r.W -= paneHPad
+	}
+	if r.W < 1 {
+		r.W = 1
+	}
+	return r
+}
+
+// abutsVDivider reports whether a vertical divider occupies column col over any
+// of rows [y, y+h).
+func abutsVDivider(divs []dividerSpec, col, y, h int) bool {
+	for _, d := range divs {
+		if d.vertical && d.x == col && d.y < y+h && d.y+d.length > y {
+			return true
+		}
+	}
+	return false
+}
+
 // computeRects is layoutGeometry for callers that only need the pane rects
 // (layout sizing, mouse hit-testing).
 func computeRects(l *Layout, x, y, w, h int) map[*Pane]Rect {

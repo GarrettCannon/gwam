@@ -32,9 +32,10 @@ func (m *Model) applyLayoutSizes() {
 		for _, t := range s.tabs {
 			// Zoomed tabs resize only the zoomed pane; the hidden panes keep
 			// their last layout size and get their winch on unzoom.
-			rects, _ := t.geometry(m.w, inner)
+			rects, divs := t.geometry(m.w, inner)
 			for pane, r := range rects {
-				resizePane(pane, r.W, r.H)
+				c := contentRect(r, divs)
+				resizePane(pane, c.W, c.H)
 			}
 		}
 		// Hidden popups are resized too, so the app inside (which keeps

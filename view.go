@@ -198,7 +198,8 @@ func (m *Model) View() tea.View {
 		r := m.popupRect(pu)
 		ox, oy, haveOrigin = r.X+1, r.Y+1, true
 	} else if r, ok := rects[p]; ok {
-		ox, oy, haveOrigin = r.X, r.Y+tabBarH, true
+		c := contentRect(r, divs)
+		ox, oy, haveOrigin = c.X, c.Y+tabBarH, true
 	}
 	if haveOrigin && p.cursorVisible && p.scrollOff == 0 && !m.prefix && m.topInteractiveOverlay() == nil {
 		px, py := paneCursorPos(p)
@@ -320,8 +321,9 @@ func renderBody(rects map[*Pane]Rect, divs []dividerSpec, w, inner int, active *
 
 	// Pane bodies.
 	for pane, r := range rects {
-		body := renderPaneBody(pane, r.W, r.H)
-		layers = append(layers, lipgloss.NewLayer(body).X(r.X).Y(r.Y).Z(2))
+		c := contentRect(r, divs)
+		body := renderPaneBody(pane, c.W, c.H)
+		layers = append(layers, lipgloss.NewLayer(body).X(c.X).Y(c.Y).Z(2))
 	}
 
 	return lipgloss.NewCompositor(layers...).Render()
