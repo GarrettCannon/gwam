@@ -385,68 +385,49 @@ func renderPaneBody(p *Pane, w, h int) string {
 	return strings.Join(lines, "\n")
 }
 
-// renderPrefixPanel builds the floating cheatsheet shown while prefix is
-// armed. Single-column LazyVim/which-key layout: a cyan title row, then
-// one "<keys> → <label>" line per (action, effective label) pair.
-// Bindings that resolve to the same action+label collapse into one row —
-// tab.jump's 1..9 nine bindings render as "1-9"; pane.resize's h/l/k/j
-// stay four rows because each one overrides Label per direction.
+// renderPrefixPanel builds the floating cheatsheet shown while the prefix is
+// armed. It renders the root which-key level: group leaders ("t → +tabs")
+// alongside any flat actions kept at root. Pressing a leader opens a
+// WhichKeyOverlay for that submenu, which renders with the same helper.
 func renderPrefixPanel(m *Model) string {
+	return renderMenuPanel(m, defaultKeymap.menus[""], "» PREFIX C-A", "esc to cancel")
+}
+
+// renderMenuPanel draws one which-key level as the floating panel: a cyan
+// header (title or breadcrumb), then one "<keys> → <label>" line per binding
+// in registration order. Bindings that resolve to the same label collapse
+// into one row with their keys merged — tab.jump's 1..9 render as "1-9";
+// pane.resize's four directions stay separate because each overrides Label.
+// A live status suffix (mouse "(on)", zoom) is appended when the action
+// provides one. Shared by the root prefix panel and WhichKeyOverlay so the
+// two always look identical.
+func renderMenuPanel(m *Model, lvl *menuLevel, header, hint string) string {
 	type row struct {
 		keys   []Key
 		label  string
-		group  string
 		status func(*Model) string
 	}
-	// Dedupe by effective (group, label) — that's the visual identity of
-	// the row. Two bindings with the same action and label collapse. We
-	// skip direct bindings here: the prefix overlay's job is to show what
-	// the prefix can do, and a direct binding is by definition not gated
-	// on prefix. They still show up in `gwam config check` output.
 	seen := map[string]*row{}
 	var rows []*row
-	var groupOrder []string
-	groupSeen := map[string]bool{}
-	for _, b := range defaultKeymap.bindings {
-		if b.Trigger.Direct {
-			continue
-		}
-		group := b.EffectiveGroup()
+	for _, b := range lvl.bindings {
 		label := b.EffectiveLabel()
-		key := group + "\x00" + label
-		if r, ok := seen[key]; ok {
+		if r, ok := seen[label]; ok {
 			r.keys = append(r.keys, b.Trigger.Key)
 			continue
 		}
-		if !groupSeen[group] {
-			groupSeen[group] = true
-			groupOrder = append(groupOrder, group)
-		}
-		r := &row{
-			keys:   []Key{b.Trigger.Key},
-			label:  label,
-			group:  group,
-			status: b.Action.Status,
-		}
-		seen[key] = r
+		r := &row{keys: []Key{b.Trigger.Key}, label: label, status: b.Action.Status}
+		seen[label] = r
 		rows = append(rows, r)
-	}
-
-	byGroup := map[string][]*row{}
-	for _, r := range rows {
-		byGroup[r.group] = append(byGroup[r.group], r)
 	}
 
 	type line struct{ key, label string }
 	var lines []line
-	for _, g := range groupOrder {
-		for _, r := range byGroup[g] {
-			label := r.label
-			if r.status != nil {
-				label += " " + r.status(m)
-			}
-			lines = append(lines, line{key: collapseKeys(r.keys), label: label})
+	for _, r := range rows {
+		label := r.label
+		if r.status != nil {
+			label += " " + r.status(m)
 		}
+		lines = append(lines, line{key: collapseKeys(r.keys), label: label})
 	}
 
 	// right-align keys in their own column so the arrows line up
@@ -459,7 +440,7 @@ func renderPrefixPanel(m *Model) string {
 	keyCol := lipgloss.NewStyle().Width(keyW).Align(lipgloss.Right)
 
 	out := []string{
-		prefixPanelTitle.Render("» PREFIX C-A") + "   " + prefixHint.Render("esc to cancel"),
+		prefixPanelTitle.Render(header) + "   " + prefixHint.Render(hint),
 		"",
 	}
 	for _, ln := range lines {

@@ -28,6 +28,7 @@ type BindingSpec struct {
 	Args     map[string]any // nil if the action takes none
 	Group    string         // overlay section override; "" = use action's
 	Label    string         // overlay label override; "" = use action's
+	Menu     string         // which-key submenu this lives in; "" = root
 }
 
 // Binding is the resolved form: an action pointer plus already-parsed
@@ -39,6 +40,7 @@ type Binding struct {
 	Args    any
 	Group   string
 	Label   string
+	Menu    string
 }
 
 // EffectiveLabel/EffectiveGroup centralize the override fallback chain so
@@ -60,18 +62,55 @@ func (b *Binding) EffectiveGroup() string {
 	return "general"
 }
 
-// Keymap is the dispatch table. bindings preserves registration order
-// (the overlay walks it); byPrefixByte and byDirectByte are the fast
-// indices for single-byte keys; byPrefixSeq and byDirectSeq hold the
-// multi-byte escape-sequence encodings (arrows, F-keys, alt-*) keyed by
-// the raw byte string. All indices live here so the pump only sees one
-// type. One Binding may appear under several seq keys — a key like "up"
-// has both CSI and SS3 encodings.
+// menuLevel is one node of the which-key tree: the set of prefix bindings
+// reachable at a given menu. The root level ("") holds the keys that fire
+// straight after Ctrl-A — group leaders (menu.open) and any flat actions
+// the user kept at root; a submenu like "tabs" holds that group's actions.
+// byByte/bySeq are the single-byte and escape-sequence indices (same split
+// as the old prefix maps); bindings preserves registration order for the
+// panel renderer.
+type menuLevel struct {
+	name     string
+	title    string // "+tabs"; "" for root
+	byByte   map[byte]*Binding
+	bySeq    map[string]*Binding
+	bindings []*Binding
+}
+
+func newMenuLevel(name string) *menuLevel {
+	return &menuLevel{
+		name:   name,
+		title:  menuTitle(name),
+		byByte: map[byte]*Binding{},
+		bySeq:  map[string]*Binding{},
+	}
+}
+
+// match resolves a raw key batch from the pump against this level: a single
+// byte against byByte, anything multi-byte (a legacy arrow/F-key sequence)
+// against bySeq. Used by WhichKeyOverlay; the pump's first-follow-key path
+// resolves the root level via LookupPrefix/MatchPrefixSeq instead.
+func (lvl *menuLevel) match(data []byte) *Binding {
+	if len(data) == 1 {
+		if bd := lvl.byByte[data[0]]; bd != nil {
+			return bd
+		}
+	}
+	return lvl.bySeq[string(data)]
+}
+
+// Keymap is the dispatch table. bindings preserves registration order across
+// every menu (config check walks it); menus holds one menuLevel per which-key
+// node, with menus[""] the root the prefix resolves against; menuOrder is the
+// first-seen menu order for deterministic listing. byDirectByte/byDirectSeq
+// are the prefix-less direct indices — always root, never nested. One Binding
+// may appear under several seq keys (a key like "up" has both CSI and SS3
+// encodings).
 type Keymap struct {
 	bindings     []*Binding
-	byPrefixByte map[byte]*Binding
+	menus        map[string]*menuLevel
+	menuOrder    []string
 	byDirectByte map[byte]*Binding
-	byPrefixSeq  map[string]*Binding
 	byDirectSeq  map[string]*Binding
 }
 
@@ -85,9 +124,9 @@ type Keymap struct {
 // Ctrl-A prefix.
 func buildKeymap(specs []BindingSpec) (*Keymap, error) {
 	k := &Keymap{
-		byPrefixByte: map[byte]*Binding{},
+		menus:        map[string]*menuLevel{"": newMenuLevel("")},
+		menuOrder:    []string{""},
 		byDirectByte: map[byte]*Binding{},
-		byPrefixSeq:  map[string]*Binding{},
 		byDirectSeq:  map[string]*Binding{},
 	}
 	for _, s := range specs {
@@ -115,34 +154,74 @@ func buildKeymap(specs []BindingSpec) (*Keymap, error) {
 			Args:    args,
 			Group:   s.Group,
 			Label:   s.Label,
+			Menu:    s.Menu,
+		}
+		// Direct bindings are always root and prefix-less — they never live
+		// in a menu. Prefix bindings land in their declared menu's level, so
+		// the same key (e.g. "c") can mean different things in +tabs vs
+		// +sessions without colliding.
+		if s.Trigger.Direct {
+			if err := indexEncodings(k.byDirectByte, k.byDirectSeq, bd, encs, "direct", true); err != nil {
+				return nil, err
+			}
+			k.bindings = append(k.bindings, bd)
+			continue
+		}
+		lvl := k.menus[s.Menu]
+		if lvl == nil {
+			lvl = newMenuLevel(s.Menu)
+			k.menus[s.Menu] = lvl
+			k.menuOrder = append(k.menuOrder, s.Menu)
 		}
 		kind := "prefix"
-		byteIdx, seqIdx := k.byPrefixByte, k.byPrefixSeq
-		if s.Trigger.Direct {
-			kind = "direct"
-			byteIdx, seqIdx = k.byDirectByte, k.byDirectSeq
+		if s.Menu != "" {
+			kind = "prefix(" + s.Menu + ")"
 		}
-		for _, e := range encs {
-			if len(e) == 1 {
-				b := e[0]
-				if s.Trigger.Direct && b == 0x01 {
-					return nil, fmt.Errorf("key %s: conflicts with built-in Ctrl-A prefix", s.Trigger.Key)
-				}
-				if _, dup := byteIdx[b]; dup {
-					return nil, fmt.Errorf("duplicate %s binding for key %s", kind, s.Trigger.Key)
-				}
-				byteIdx[b] = bd
-				continue
-			}
-			seq := string(e)
-			if _, dup := seqIdx[seq]; dup {
-				return nil, fmt.Errorf("duplicate %s binding for key %s", kind, s.Trigger.Key)
-			}
-			seqIdx[seq] = bd
+		if err := indexEncodings(lvl.byByte, lvl.bySeq, bd, encs, kind, false); err != nil {
+			return nil, err
 		}
+		lvl.bindings = append(lvl.bindings, bd)
 		k.bindings = append(k.bindings, bd)
 	}
+	// Every group leader must point at a menu that actually has entries;
+	// a leader to an empty/undefined submenu is a dead key, so fail loudly
+	// at build time rather than silently no-op on the keystroke.
+	for _, bd := range k.bindings {
+		if bd.Action.ID != "menu.open" {
+			continue
+		}
+		g := bd.Args.(*menuOpenArgs).group
+		if lvl, ok := k.menus[g]; !ok || len(lvl.bindings) == 0 {
+			return nil, fmt.Errorf("key %s: menu.open targets group %q which has no bindings", bd.Trigger.Key, g)
+		}
+	}
 	return k, nil
+}
+
+// indexEncodings inserts bd under each of its legacy encodings into the given
+// byte/seq index pair, rejecting duplicates within that scope and (for direct
+// bindings) any clash with the built-in Ctrl-A prefix. kind names the scope
+// for error messages ("direct", "prefix", "prefix(tabs)").
+func indexEncodings(byteIdx map[byte]*Binding, seqIdx map[string]*Binding, bd *Binding, encs [][]byte, kind string, direct bool) error {
+	for _, e := range encs {
+		if len(e) == 1 {
+			b := e[0]
+			if direct && b == 0x01 {
+				return fmt.Errorf("key %s: conflicts with built-in Ctrl-A prefix", bd.Trigger.Key)
+			}
+			if _, dup := byteIdx[b]; dup {
+				return fmt.Errorf("duplicate %s binding for key %s", kind, bd.Trigger.Key)
+			}
+			byteIdx[b] = bd
+			continue
+		}
+		seq := string(e)
+		if _, dup := seqIdx[seq]; dup {
+			return fmt.Errorf("duplicate %s binding for key %s", kind, bd.Trigger.Key)
+		}
+		seqIdx[seq] = bd
+	}
+	return nil
 }
 
 // LookupPrefix returns the binding registered for a post-prefix byte, or
@@ -150,7 +229,7 @@ func buildKeymap(specs []BindingSpec) (*Keymap, error) {
 // because the keymap pointer is set once at startup (defaults +
 // optional config overrides) and never mutated after.
 func (k *Keymap) LookupPrefix(b byte) *Binding {
-	return k.byPrefixByte[b]
+	return k.menus[""].byByte[b]
 }
 
 // LookupDirect returns the binding registered for a byte that should fire
@@ -176,7 +255,7 @@ func matchSeq(idx map[string]*Binding, c []byte, i int) (*Binding, int) {
 // MatchPrefixSeq / MatchDirectSeq are the pump-side sequence matchers —
 // same concurrency guarantees as LookupPrefix.
 func (k *Keymap) MatchPrefixSeq(c []byte, i int) (*Binding, int) {
-	return matchSeq(k.byPrefixSeq, c, i)
+	return matchSeq(k.menus[""].bySeq, c, i)
 }
 
 func (k *Keymap) MatchDirectSeq(c []byte, i int) (*Binding, int) {
@@ -186,7 +265,7 @@ func (k *Keymap) MatchDirectSeq(c []byte, i int) (*Binding, int) {
 // LookupPrefixSeq / LookupDirectSeq re-resolve a matched sequence in
 // Update, mirroring LookupPrefix/LookupDirect for the byte paths.
 func (k *Keymap) LookupPrefixSeq(seq string) *Binding {
-	return k.byPrefixSeq[seq]
+	return k.menus[""].bySeq[seq]
 }
 
 func (k *Keymap) LookupDirectSeq(seq string) *Binding {
@@ -194,22 +273,31 @@ func (k *Keymap) LookupDirectSeq(seq string) *Binding {
 }
 
 // applyOverrides overlays a user spec slice on top of defaults. For each
-// override, if its Trigger matches an entry in defaults, it replaces that
-// entry in place; otherwise it appends. Default order is preserved so the
-// prefix overlay still reads top-to-bottom in the same shape the user is
+// override, if its (Trigger, Menu) matches an entry in defaults, it replaces
+// that entry in place; otherwise it appends. Default order is preserved so
+// the menu panels still read top-to-bottom in the same shape the user is
 // used to, with config-added bindings landing at the end.
+//
+// Menu is part of the identity: the same key in two different menus (e.g. "c"
+// in +tabs and +sessions) is two distinct bindings, so adding a key to one
+// submenu must not clobber the same key in another menu or at root.
 func applyOverrides(defaults, overrides []BindingSpec) []BindingSpec {
+	type slot struct {
+		Trigger Trigger
+		Menu    string
+	}
 	out := append([]BindingSpec(nil), defaults...)
-	idx := make(map[Trigger]int, len(out))
+	idx := make(map[slot]int, len(out))
 	for i, s := range out {
-		idx[s.Trigger] = i
+		idx[slot{s.Trigger, s.Menu}] = i
 	}
 	for _, s := range overrides {
-		if i, ok := idx[s.Trigger]; ok {
+		key := slot{s.Trigger, s.Menu}
+		if i, ok := idx[key]; ok {
 			out[i] = s
 			continue
 		}
-		idx[s.Trigger] = len(out)
+		idx[key] = len(out)
 		out = append(out, s)
 	}
 	return out

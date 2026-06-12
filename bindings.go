@@ -17,6 +17,27 @@ import (
 // per-binding idx arg — a plain slice literal can't hold the loop.
 var defaultBindings = makeDefaultBindings()
 
+// menuTitles maps a which-key submenu name to its display title (the header
+// shown in the overlay and the label of its leader row at root). A name with
+// no entry here falls back to "+<name>". Config can extend/override this via
+// the [menus] table before the keymap is rebuilt.
+var menuTitles = map[string]string{
+	"tabs":     "+tabs",
+	"panes":    "+panes",
+	"sessions": "+sessions",
+}
+
+// menuTitle resolves a submenu's display title. Root ("") has no title.
+func menuTitle(name string) string {
+	if name == "" {
+		return ""
+	}
+	if t, ok := menuTitles[name]; ok {
+		return t
+	}
+	return "+" + name
+}
+
 // mustKey parses a key spec at init-time, panicking on error. Defaults
 // are baked into the binary so a typo here is a programmer error, not a
 // runtime condition worth handling — surfacing as a panic on startup is
@@ -37,37 +58,59 @@ func dir(s string) Trigger { return Trigger{Key: mustKey(s), Direct: true} }
 
 func makeDefaultBindings() []BindingSpec {
 	bs := []BindingSpec{
-		{Trigger: pre("c"), ActionID: "tab.new"},
-		{Trigger: pre("n"), ActionID: "tab.next"},
-		{Trigger: pre("p"), ActionID: "tab.prev"},
-		{Trigger: pre("space"), ActionID: "tab.last"},
-		{Trigger: pre(","), ActionID: "tab.rename"},
-		{Trigger: pre("&"), ActionID: "tab.kill"},
-		{Trigger: pre("|"), ActionID: "pane.split-v"},
-		{Trigger: pre("_"), ActionID: "pane.split-h"},
-		{Trigger: pre("o"), ActionID: "pane.cycle"},
-		{Trigger: pre("left"), ActionID: "pane.select", Args: map[string]any{"dir": "left"}, Label: "Select left"},
-		{Trigger: pre("right"), ActionID: "pane.select", Args: map[string]any{"dir": "right"}, Label: "Select right"},
-		{Trigger: pre("up"), ActionID: "pane.select", Args: map[string]any{"dir": "up"}, Label: "Select up"},
-		{Trigger: pre("down"), ActionID: "pane.select", Args: map[string]any{"dir": "down"}, Label: "Select down"},
-		{Trigger: pre("x"), ActionID: "pane.kill"},
-		{Trigger: pre("z"), ActionID: "pane.zoom"},
-		{Trigger: pre("/"), ActionID: "pane.search"},
-		{Trigger: pre("h"), ActionID: "pane.resize", Args: map[string]any{"dir": "left"}, Label: "Resize left"},
-		{Trigger: pre("l"), ActionID: "pane.resize", Args: map[string]any{"dir": "right"}, Label: "Resize right"},
-		{Trigger: pre("k"), ActionID: "pane.resize", Args: map[string]any{"dir": "up"}, Label: "Resize up"},
-		{Trigger: pre("j"), ActionID: "pane.resize", Args: map[string]any{"dir": "down"}, Label: "Resize down"},
-		{Trigger: pre("s"), ActionID: "session.new"},
-		{Trigger: pre("w"), ActionID: "session.next"},
-		{Trigger: pre("L"), ActionID: "session.last"},
-		{Trigger: pre("W"), ActionID: "session.pick"},
-		{Trigger: pre("$"), ActionID: "session.rename"},
-		{Trigger: pre("T"), ActionID: "tab.pick"},
-		{Trigger: dir("ctrl-t"), ActionID: "tab.pick"},
+		// Root level: group leaders open which-key submenus, plus a few
+		// globals that don't belong to any noun. The submenu a leader opens
+		// is named by its menu.open group arg and populated by the bindings
+		// tagged with that same Menu below.
+		{Trigger: pre("t"), ActionID: "menu.open", Args: map[string]any{"group": "tabs"}, Label: "+tabs"},
+		{Trigger: pre("p"), ActionID: "menu.open", Args: map[string]any{"group": "panes"}, Label: "+panes"},
+		{Trigger: pre("s"), ActionID: "menu.open", Args: map[string]any{"group": "sessions"}, Label: "+sessions"},
 		{Trigger: pre("!"), ActionID: "popup.toggle", Args: map[string]any{"name": "scratch"}, Label: "Scratch popup"},
 		{Trigger: pre("m"), ActionID: "mouse.toggle"},
 		{Trigger: pre("q"), ActionID: "quit"},
+		// ctrl-t fires the tab picker without the prefix — a direct
+		// accelerator that bypasses the menu entirely.
+		{Trigger: dir("ctrl-t"), ActionID: "tab.pick"},
+
+		// +tabs — shared verb vocabulary: c create, n/p next/prev, l last,
+		// x close, r rename, space pick.
+		{Trigger: pre("c"), ActionID: "tab.new", Menu: "tabs"},
+		{Trigger: pre("n"), ActionID: "tab.next", Menu: "tabs"},
+		{Trigger: pre("p"), ActionID: "tab.prev", Menu: "tabs"},
+		{Trigger: pre("l"), ActionID: "tab.last", Menu: "tabs"},
+		{Trigger: pre("x"), ActionID: "tab.kill", Menu: "tabs"},
+		{Trigger: pre("r"), ActionID: "tab.rename", Menu: "tabs"},
+		{Trigger: pre("space"), ActionID: "tab.pick", Menu: "tabs"},
+
+		// +sessions — the same verbs as +tabs, so muscle memory transfers.
+		{Trigger: pre("c"), ActionID: "session.new", Menu: "sessions"},
+		{Trigger: pre("n"), ActionID: "session.next", Menu: "sessions"},
+		{Trigger: pre("p"), ActionID: "session.prev", Menu: "sessions"},
+		{Trigger: pre("l"), ActionID: "session.last", Menu: "sessions"},
+		{Trigger: pre("x"), ActionID: "session.kill", Menu: "sessions"},
+		{Trigger: pre("r"), ActionID: "session.rename", Menu: "sessions"},
+		{Trigger: pre("space"), ActionID: "session.pick", Menu: "sessions"},
+
+		// +panes — pane-specific verbs (a pane isn't created/renamed like a
+		// tab or session, so it carries its own set rather than the shared one).
+		{Trigger: pre("|"), ActionID: "pane.split-v", Menu: "panes"},
+		{Trigger: pre("_"), ActionID: "pane.split-h", Menu: "panes"},
+		{Trigger: pre("o"), ActionID: "pane.cycle", Menu: "panes"},
+		{Trigger: pre("left"), ActionID: "pane.select", Args: map[string]any{"dir": "left"}, Label: "Select left", Menu: "panes"},
+		{Trigger: pre("right"), ActionID: "pane.select", Args: map[string]any{"dir": "right"}, Label: "Select right", Menu: "panes"},
+		{Trigger: pre("up"), ActionID: "pane.select", Args: map[string]any{"dir": "up"}, Label: "Select up", Menu: "panes"},
+		{Trigger: pre("down"), ActionID: "pane.select", Args: map[string]any{"dir": "down"}, Label: "Select down", Menu: "panes"},
+		{Trigger: pre("z"), ActionID: "pane.zoom", Menu: "panes"},
+		{Trigger: pre("x"), ActionID: "pane.kill", Menu: "panes"},
+		{Trigger: pre("/"), ActionID: "pane.search", Menu: "panes"},
+		{Trigger: pre("h"), ActionID: "pane.resize", Args: map[string]any{"dir": "left"}, Label: "Resize left", Menu: "panes"},
+		{Trigger: pre("l"), ActionID: "pane.resize", Args: map[string]any{"dir": "right"}, Label: "Resize right", Menu: "panes"},
+		{Trigger: pre("k"), ActionID: "pane.resize", Args: map[string]any{"dir": "up"}, Label: "Resize up", Menu: "panes"},
+		{Trigger: pre("j"), ActionID: "pane.resize", Args: map[string]any{"dir": "down"}, Label: "Resize down", Menu: "panes"},
 	}
+	// tab.jump stays at root: digits don't collide with the verb letters and
+	// jumping to a numbered tab is high-frequency enough to want one keystroke
+	// after the prefix rather than a trip through +tabs.
 	for i := 0; i < 9; i++ {
 		bs = append(bs, BindingSpec{
 			Trigger:  pre(string('1' + byte(i))),
@@ -152,6 +195,46 @@ func (m *Model) actNewSession() tea.Cmd {
 func (m *Model) actNextSession() tea.Cmd {
 	m.switchSession((m.active + 1) % len(m.sessions))
 	m.syncActive()
+	return nil
+}
+
+func (m *Model) actPrevSession() tea.Cmd {
+	m.switchSession((m.active - 1 + len(m.sessions)) % len(m.sessions))
+	m.syncActive()
+	return nil
+}
+
+// actKillSession closes the current session and everything in it, cascading
+// through removeTab (which drops the session when its last tab goes and quits
+// gwam when no sessions remain). All ptys are closed up front; the per-tab
+// read loops will EOF and emit ptyReadMsg, but closePane's lookups no-op once
+// the panes are unreachable. Tabs are removed from the end so the doomed
+// session's active index never has to shuffle.
+func (m *Model) actKillSession() tea.Cmd {
+	si := m.active
+	s := m.sessions[si]
+	for _, t := range s.tabs {
+		for _, p := range t.panes() {
+			p.pty.Close()
+		}
+	}
+	var cmd tea.Cmd
+	for len(m.sessions) > si && m.sessions[si] == s && len(s.tabs) > 0 {
+		cmd = m.removeTab(si, len(s.tabs)-1)
+	}
+	return cmd
+}
+
+// actOpenMenu pushes a which-key overlay scoped to the named submenu. A
+// leader pointing at an undefined group is rejected at keymap-build time, so
+// a nil level here would only mean a programming error — guard anyway and
+// no-op rather than panic on a keystroke.
+func (m *Model) actOpenMenu(group string) tea.Cmd {
+	lvl := defaultKeymap.menus[group]
+	if lvl == nil {
+		return nil
+	}
+	m.pushOverlay(NewWhichKeyOverlay(lvl))
 	return nil
 }
 

@@ -55,59 +55,85 @@ Fields:
 
 ## Prefix and bindings
 
-The prefix is **Ctrl-A**. Press it, then a key:
+The prefix is **Ctrl-A**. Bindings are organized as a [which-key]-style
+drill-down: press the prefix, then a **group leader** to open that group's
+submenu, then a key in the submenu to run an action. Group leaders and a few
+globals live at the root level:
 
 | Key       | Action                                              |
 |-----------|-----------------------------------------------------|
-| c         | new tab in the current session                      |
-| n / p     | next / previous tab (wraps)                         |
-| space     | flip to the previously active tab                   |
+| t         | open the **+tabs** menu                             |
+| p         | open the **+panes** menu                            |
+| s         | open the **+sessions** menu                         |
 | 1-9       | jump to tab N                                       |
-| ,         | rename the current tab (empty clears)               |
-| &         | kill the current tab and all its panes (cascades)   |
+| !         | toggle the "scratch" popup (floating shell pane)    |
+| m         | toggle mouse mode (on by default) — flashes a toast |
+| q         | quit                                                |
+| esc       | cancel the prefix                                   |
+
+The **+tabs** and **+sessions** menus share one verb vocabulary, so muscle
+memory transfers between them:
+
+| Key   | +tabs (`prefix t …`) | +sessions (`prefix s …`)        |
+|-------|----------------------|---------------------------------|
+| c     | new tab              | new session                     |
+| n / p | next / prev tab      | next / prev session             |
+| l     | last (previous) tab  | last (previous) session         |
+| x     | kill tab (cascades)  | kill session (cascades to quit) |
+| r     | rename               | rename                          |
+| space | pick (search + list) | pick (search + list)            |
+
+**+panes** (`prefix p …`) carries pane-specific verbs — a pane isn't created
+or renamed the way a tab or session is:
+
+| Key       | Action                                              |
+|-----------|-----------------------------------------------------|
 | &#124;    | split the active pane vertically (left/right)       |
 | _         | split the active pane horizontally (top/bottom)     |
 | o         | cycle focus to the next pane in the current tab     |
 | ← → ↑ ↓   | move focus to the nearest pane in that direction    |
-| x         | kill the active pane (cascades: last pane → tab)    |
 | z         | zoom the active pane to full size (toggle)          |
+| x         | kill the active pane (cascades: last pane → tab)    |
+| /         | live search over the pane's output                  |
 | h / l     | move nearest vertical divider left / right (5%)     |
 | j / k     | move nearest horizontal divider down / up (5%)      |
-| s         | new session (one fresh tab)                         |
-| w         | next session (wraps)                                |
-| L         | flip to the previously active session               |
-| W         | pick a session (search + select)                    |
-| $         | rename the current session                          |
-| T         | pick a tab in the current session (search + select) |
-| !         | toggle the "scratch" popup (floating shell pane)    |
-| m         | toggle mouse mode (on by default) — flashes a toast |
 
-Also, **outside the prefix**: `ctrl-t` directly opens the tab picker. See
-"Direct bindings" below for the tradeoff this carries.
-| q         | quit                                                |
-| esc       | cancel the prefix                                   |
+Inside a submenu, **esc** or **backspace** steps back up a level (and closes
+the menu at the top level). Also, **outside the prefix**: `ctrl-t` directly
+opens the tab picker — see "Direct bindings" below for the tradeoff this
+carries, and for binding your own one-key accelerators that skip the menus.
 
-While the prefix is armed, a yellow cheatsheet panel pops up in the top
-right showing the bindings.
+While the prefix is armed, a yellow which-key panel pops up in the top right
+showing the root level; opening a group replaces it with that submenu's keys.
+
+[which-key]: https://github.com/folke/which-key.nvim
 
 ## Config
 
 `~/.config/gwam/config.toml` (or `$XDG_CONFIG_HOME/gwam/config.toml`) lets
-you override or add prefix bindings. The file is optional — without it,
-the defaults above apply.
+you override or add bindings. The file is optional — without it, the
+defaults above apply.
 
 ```toml
-# rebind: prefix v also splits vertically
+# add a key inside the +panes submenu: prefix p v also splits vertically
 [[binding]]
 key    = "v"
 action = "pane.split-v"
+menu   = "panes"
 
-# add: prefix H takes a bigger resize left, with a custom overlay label
+# flatten: put new-tab back at the root so prefix p fires it in one
+# keystroke (this takes "p" from the +panes leader — see mix-and-match below)
+[[binding]]
+key    = "p"
+action = "tab.new"
+
+# add: prefix p H takes a bigger resize left, with a custom overlay label
 [[binding]]
 key    = "H"
 action = "pane.resize"
 args   = { dir = "left" }
 label  = "Big resize left"
+menu   = "panes"
 
 # direct binding: ctrl-t opens the tab picker WITHOUT pressing the prefix
 # first. This permanently swallows ctrl-t from every shell inside gwam.
@@ -115,12 +141,26 @@ label  = "Big resize left"
 key    = "ctrl-t"
 action = "tab.pick"
 direct = true
+
+# rename a default group's title
+[menus]
+sessions = "+workspaces"
 ```
 
 Merge semantics: each `[[binding]]` whose `(key, direct)` tuple matches a
 default replaces that default in place; a new pair appends. Defaults keep
-their original order in the prefix overlay; new bindings land at the end
-of their group.
+their original order in the menu panels; new bindings land at the end of
+their menu.
+
+**Mix-and-match.** At every level a key resolves to *one* thing — either
+run an action or open a submenu. The engine doesn't force nesting: bind a
+key at the root with no `menu` and it fires that action in one keystroke
+after the prefix; bind it to `menu.open` and it becomes a group leader. The
+only rule is the usual one-binding-per-key, *per level* — so the same key
+(e.g. `c`) can mean different things in `+tabs` and `+sessions`, but you
+can't have `p` be both the `+panes` leader and a flat `tab.new` at root. To
+flatten a branch, rebind its leader's key to the action you want and reach
+the group some other way (or via a `direct` accelerator).
 
 Fields:
 
@@ -133,7 +173,13 @@ Fields:
 - `args` — table of typed args; required only for parameterized actions.
 - `label` — optional, overrides the action's overlay label for this key.
 - `group` — optional, overrides the action's overlay group for this key.
+- `menu` — optional, which which-key submenu the binding lives in
+  (`"tabs"`, `"panes"`, `"sessions"`, or your own). Omit for the root
+  level. Open a custom submenu with a `menu.open` leader (see below).
 - `direct` — optional (default false). See "Direct bindings" below.
+
+The optional `[menus]` table maps a submenu name to its display title; names
+not listed fall back to `+<name>`.
 
 ### Direct bindings
 
@@ -188,10 +234,13 @@ conflict message.
 | `pane.resize`     | `{ dir = "left"\|"right"\|"up"\|"down" }`     | moves nearest matching divider by 5%   |
 | `session.new`     | —                                             |                                        |
 | `session.next`    | —                                             |                                        |
+| `session.prev`    | —                                             |                                        |
 | `session.last`    | —                                             | flips to the previously active session |
+| `session.kill`    | —                                             | cascades session → quit                |
 | `session.pick`    | —                                             | opens a picker over all sessions       |
 | `session.rename`  | —                                             | owns input while rename overlay is up  |
 | `popup.toggle`    | `{ name, cmd, cwd, width, height }` (all opt) | floating session-scoped pane; see "Popups" |
+| `menu.open`       | `{ group = "<name>" }`                        | opens a which-key submenu; the leader for a group of bindings |
 | `mouse.toggle`    | —                                             |                                        |
 | `quit`            | —                                             |                                        |
 
@@ -210,22 +259,24 @@ binary tree of splits: every split has a direction (vertical = a
 left/right pair, horizontal = a top/bottom pair) and a ratio (the
 fraction of the tab body occupied by the first child).
 
-- `prefix |` splits the active pane into a left/right pair at 50/50.
-- `prefix _` splits the active pane into a top/bottom pair at 50/50.
-- `prefix o` cycles focus through panes in layout order (wraps).
-- `prefix ←` / `→` / `↑` / `↓` move focus to the nearest pane in that
+Pane actions live in the **+panes** submenu (`prefix p`, then the key):
+
+- `prefix p |` splits the active pane into a left/right pair at 50/50.
+- `prefix p _` splits the active pane into a top/bottom pair at 50/50.
+- `prefix p o` cycles focus through panes in layout order (wraps).
+- `prefix p ←` / `→` / `↑` / `↓` move focus to the nearest pane in that
   direction. The pane sharing the most edge across the boundary wins;
   there's no wrap, so it's a no-op when nothing lies that way.
-- `prefix x` kills the active pane. If it was the only pane in the tab,
+- `prefix p x` kills the active pane. If it was the only pane in the tab,
   the tab closes too; if it was the last tab in the session, the session
   closes; if it was the last session, gwam quits.
-- `prefix z` zooms the active pane to the full body (toggle). The split
+- `prefix p z` zooms the active pane to the full body (toggle). The split
   tree is untouched — unzooming restores the exact layout. A purple
   `ZOOM` chip shows in the tab bar while zoomed; splitting, cycling, or
   a pane dying unzooms first so the visible panes always match the tree.
-- `prefix h` / `prefix l` move the **nearest enclosing vertical**
+- `prefix p h` / `prefix p l` move the **nearest enclosing vertical**
   divider left / right by 5% of the available width.
-- `prefix j` / `prefix k` move the **nearest enclosing horizontal**
+- `prefix p j` / `prefix p k` move the **nearest enclosing horizontal**
   divider down / up by 5% of the available height.
 
 Each pane keeps its own scrollback and only the active pane responds to
@@ -285,7 +336,7 @@ reuse the running instance and ignore them.
 
 Each tab chip shows `<n> - <label>`. The label is:
 
-1. An explicit name set via the rename binding (`prefix ,`) if any.
+1. An explicit name set via the rename binding (`prefix t r`) if any.
 2. Otherwise the label of the **active pane**, which is:
    1. The name of the current foreground process (e.g. `ping`, `vim`)
       when anything other than the shell owns the pty's foreground
@@ -296,7 +347,7 @@ Each tab chip shows `<n> - <label>`. The label is:
 
 ## Rename overlay
 
-`prefix ,` renames the current tab; `prefix $` renames the current
+`prefix t r` renames the current tab; `prefix s r` renames the current
 session. Both pop a small centered input box: type ASCII, Enter to
 confirm, Esc (or Ctrl-C) to cancel, Backspace to edit. Renaming a tab
 with an empty buffer clears the override and falls back to the
@@ -351,13 +402,17 @@ The stdin pump owns input routing. It:
 ## Overlays
 
 Built on `lipgloss.Compositor` + `Layer`. A small `Overlay` interface
-(`overlay.go`) plus a stack on `Model` powers four kinds of floating UI:
+(`overlay.go`) plus a stack on `Model` powers five kinds of floating UI:
 
 - **Rename** (`overlay_rename.go`) — title + single-line input. Powers
-  `prefix ,` and `prefix $`.
+  `prefix t r` and `prefix s r`.
 - **Picker** (`overlay_picker.go`) — search input + filtered list with
-  arrow / Ctrl-P,N navigation, prefix-match filter. Powers `prefix W`
-  (sessions) and `prefix T` (tabs).
+  arrow / Ctrl-P,N navigation, prefix-match filter. Powers `prefix s space`
+  (sessions) and `prefix t space` / `ctrl-t` (tabs).
+- **Which-key** (`overlay_whichkey.go`) — the drill-down submenu opened by a
+  `menu.open` leader. Holds a stack of `menuLevel`s; resolves each follow
+  key against the current level, descends into nested groups, and pops on
+  Esc/Backspace.
 - **Confirm** (`overlay_confirm.go`) — y/n prompt with a callback. No
   default binding yet.
 - **Notice** (`overlay_notice.go`) — passive auto-dismissing toast in the
@@ -369,9 +424,13 @@ stdin pump via `overlayKeyMsg`; passive overlays (notices) don't, and
 the keys flow past them. Multiple overlays can stack — the topmost
 interactive one owns input and Esc.
 
-The **prefix cheatsheet** isn't an overlay — it's the visual half of
-prefix mode, drawn on top of the overlay stack. Anchored to the right
-edge so it sits flush under the `PREFIX C-A` chip when armed.
+The **root which-key panel** isn't an overlay — it's the visual half of
+prefix mode, drawn on top of the overlay stack and anchored to the right
+edge so it sits flush under the `PREFIX C-A` chip when armed. Opening a
+group (pressing a `menu.open` leader) pushes a `WhichKeyOverlay`, which *is*
+an interactive overlay: it owns input, resolves each follow key against its
+submenu level, descends into nested groups, and renders with the same panel
+helper so root and submenus look identical.
 
 ## Code layout
 
@@ -393,11 +452,14 @@ Per-feature Go files:
 - `actions_builtin.go` — one `registerAction` call per built-in action,
   each a thin wrapper around the matching `act*` method.
 - `keymap.go` — `Trigger`, `BindingSpec` (raw declaration form),
-  `Binding` (resolved form), `Keymap` with byte indexes for single-byte
-  keys and sequence indexes for multi-byte ones; `buildKeymap` validates
-  args up-front; `applyOverrides` overlays user config on top of
-  defaults. `defaultKeymap` is built at init from defaults;
-  `applyUserConfig` replaces it with the merged keymap.
+  `Binding` (resolved form), `menuLevel` (one which-key node, with byte
+  indexes for single-byte keys and sequence indexes for multi-byte ones),
+  and `Keymap` (one `menuLevel` per menu, keyed by name; `menus[""]` is the
+  root the prefix resolves against, plus the prefix-less direct indexes).
+  `buildKeymap` partitions bindings by menu, validates args up-front, and
+  checks that every leader points at a non-empty submenu; `applyOverrides`
+  overlays user config on top of defaults. `defaultKeymap` is built at init
+  from defaults; `applyUserConfig` replaces it with the merged keymap.
 - `bindings.go` — `defaultBindings` (the in-process binding table that
   references action IDs) and all `act*` methods.
 - `config.go` — `Config`/`ConfigBinding` TOML types, `loadConfig`,
@@ -416,8 +478,9 @@ Per-feature Go files:
   fractional-y), `Model.overlays` stack, push/pop/remove helpers, and
   `overlayKeyMsg`.
 - `overlay_rename.go`, `overlay_picker.go`, `overlay_confirm.go`,
-  `overlay_notice.go` — concrete overlay kits. Each is one struct
-  implementing `Overlay`, plus a small constructor.
+  `overlay_notice.go`, `overlay_whichkey.go` — concrete overlay kits. Each
+  is one struct implementing `Overlay`, plus a small constructor.
+  `overlay_whichkey.go` is the drill-down submenu (a stack of `menuLevel`s).
 - `popup.go` — session-scoped floating panes: `Popup`, `Session.popups`
   helpers (`visiblePopup`, `focusPane`), `popupRect`/`renderPopup`,
   `actPopupToggle`, and `popup.toggle` arg parsing.
@@ -441,8 +504,7 @@ the pump can passthrough raw bytes without going through `Update`.
 - macOS + Linux only — Windows would need a different pty backend and
   process-lookup story.
 - No "detach / attach" — gwam is a single-process foreground tool.
-- Pane renames aren't supported — `,` renames the tab; pane labels are
-  always auto-derived from their fg-process / cwd.
-- The cheatsheet has no nested groups (LazyVim-style sub-panels).
+- Pane renames aren't supported — `prefix t r` renames the tab; pane
+  labels are always auto-derived from their fg-process / cwd.
 - Title parsing assumes well-behaved shells for OSC 7; idle fallback via
   per-platform process lookup covers shells that don't emit it.

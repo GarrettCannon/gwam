@@ -14,6 +14,10 @@ import (
 // will hang off this struct.
 type Config struct {
 	Bindings []ConfigBinding `toml:"binding"`
+	// Menus maps a which-key submenu name to a display title, overriding the
+	// built-in menuTitles (e.g. menus.tabs = "+windows"). Names not listed
+	// fall back to "+<name>".
+	Menus map[string]string `toml:"menus"`
 }
 
 // ConfigBinding is one [[binding]] entry. Fields mirror BindingSpec but in
@@ -40,13 +44,29 @@ type Config struct {
 //
 // Label/Group override the action's display copy in the prefix overlay
 // (same fields as BindingSpec.Label/Group). Direct mirrors
-// BindingSpec.Trigger.Direct.
+// BindingSpec.Trigger.Direct. Menu places the binding inside a which-key
+// submenu ("tabs", "panes", ...); "" (the default) keeps it at root, so a
+// flat root binding and a group leader are both expressible at the same key
+// slot — whichever the user declares wins, with the usual one-binding-per-key
+// rule per level.
+//
+//	# fire new-tab in one keystroke after the prefix, no menu:
+//	[[binding]]
+//	key    = "p"
+//	action = "tab.new"
+//
+//	# add a key inside the +panes submenu:
+//	[[binding]]
+//	key    = "v"
+//	action = "pane.split-v"
+//	menu   = "panes"
 type ConfigBinding struct {
 	Key    string         `toml:"key"`
 	Action string         `toml:"action"`
 	Args   map[string]any `toml:"args"`
 	Label  string         `toml:"label"`
 	Group  string         `toml:"group"`
+	Menu   string         `toml:"menu"`
 	Direct bool           `toml:"direct"`
 }
 
@@ -103,6 +123,7 @@ func configBindingsToSpecs(cbs []ConfigBinding) ([]BindingSpec, error) {
 			Args:     cb.Args,
 			Group:    cb.Group,
 			Label:    cb.Label,
+			Menu:     cb.Menu,
 		})
 	}
 	return specs, nil
@@ -120,7 +141,26 @@ func applyUserConfig() error {
 	if err != nil {
 		return err
 	}
-	if cfg == nil || len(cfg.Bindings) == 0 {
+	if cfg == nil {
+		return nil
+	}
+	// Menu-title overrides apply to both the panel render (via menuTitle, read
+	// at keymap-build time) and any rebuilt level, so merge them before
+	// building. Done even when there are no binding overrides — a user may
+	// only want to rename a default group.
+	for name, title := range cfg.Menus {
+		menuTitles[name] = title
+	}
+	if len(cfg.Bindings) == 0 {
+		if len(cfg.Menus) > 0 {
+			// Titles changed but bindings didn't — rebuild so the default
+			// levels pick up the new titles.
+			km, err := buildKeymap(defaultBindings)
+			if err != nil {
+				return err
+			}
+			defaultKeymap = km
+		}
 		return nil
 	}
 	overrides, err := configBindingsToSpecs(cfg.Bindings)
@@ -174,32 +214,29 @@ func checkConfig(w io.Writer) error {
 	}
 
 	fmt.Fprintln(w, "\neffective bindings:")
-	printBindings(w, km.bindings)
+	printBindings(w, km)
 	return nil
 }
 
-// printBindings writes one row per binding, grouped by effective group
-// with group headers, columns aligned. Used by `gwam config check` so
-// users can see at a glance which key fires which action with which args.
-func printBindings(w io.Writer, bs []*Binding) {
-	if len(bs) == 0 {
+// printBindings writes one row per binding, grouped by which-key menu with
+// headers showing each submenu's leader path, columns aligned. Direct
+// (prefix-less) bindings get their own trailing section. Used by `gwam config
+// check` so users see at a glance which key fires which action where.
+func printBindings(w io.Writer, km *Keymap) {
+	if len(km.bindings) == 0 {
 		return
 	}
-	// Bucket by group preserving the input order's first-seen-group order.
-	var groupOrder []string
-	seen := map[string]bool{}
-	groups := map[string][]*Binding{}
-	for _, b := range bs {
-		g := b.EffectiveGroup()
-		if !seen[g] {
-			seen[g] = true
-			groupOrder = append(groupOrder, g)
+	// Map each submenu to the root leader key that opens it, so the header
+	// can show "+tabs (prefix t)".
+	leaderOf := map[string]string{}
+	for _, b := range km.menus[""].bindings {
+		if b.Action.ID == "menu.open" {
+			leaderOf[b.Args.(*menuOpenArgs).group] = b.Trigger.Key.String()
 		}
-		groups[g] = append(groups[g], b)
 	}
 
-	// Pre-compute column widths across all rows so cross-group columns
-	// still align — easier to scan than per-group alignment. Direct
+	// Pre-compute column widths across all rows so cross-section columns
+	// still align — easier to scan than per-section alignment. Direct
 	// bindings show their full canonical form ("ctrl-t") plus a "(direct)"
 	// marker so the user can tell at a glance which keys fire without the
 	// prefix.
@@ -211,7 +248,7 @@ func printBindings(w io.Writer, bs []*Binding) {
 		return s
 	}
 	keyW, actW, lblW := 3, 0, 0
-	for _, b := range bs {
+	for _, b := range km.bindings {
 		if w := len(keyLabel(b)); w > keyW {
 			keyW = w
 		}
@@ -222,19 +259,44 @@ func printBindings(w io.Writer, bs []*Binding) {
 			lblW = w
 		}
 	}
+	printRow := func(b *Binding) {
+		line := fmt.Sprintf("    %-*s  %-*s  %-*s",
+			keyW, keyLabel(b),
+			actW, b.Action.ID,
+			lblW, b.EffectiveLabel(),
+		)
+		if a := formatArgs(b.Args); a != "" {
+			line += "  " + a
+		}
+		fmt.Fprintln(w, line)
+	}
 
-	for _, g := range groupOrder {
-		fmt.Fprintf(w, "  [%s]\n", g)
-		for _, b := range groups[g] {
-			line := fmt.Sprintf("    %-*s  %-*s  %-*s",
-				keyW, keyLabel(b),
-				actW, b.Action.ID,
-				lblW, b.EffectiveLabel(),
-			)
-			if a := formatArgs(b.Args); a != "" {
-				line += "  " + a
-			}
-			fmt.Fprintln(w, line)
+	for _, name := range km.menuOrder {
+		switch {
+		case name == "":
+			fmt.Fprintln(w, "  [root] (after prefix C-A)")
+		case leaderOf[name] != "":
+			fmt.Fprintf(w, "  [%s] (prefix %s)\n", menuTitle(name), leaderOf[name])
+		default:
+			fmt.Fprintf(w, "  [%s]\n", menuTitle(name))
+		}
+		for _, b := range km.menus[name].bindings {
+			printRow(b)
+		}
+	}
+
+	// Direct bindings live outside the menu tree (km.menus only holds prefix
+	// bindings), so collect and print them last.
+	var direct []*Binding
+	for _, b := range km.bindings {
+		if b.Trigger.Direct {
+			direct = append(direct, b)
+		}
+	}
+	if len(direct) > 0 {
+		fmt.Fprintln(w, "  [direct] (no prefix)")
+		for _, b := range direct {
+			printRow(b)
 		}
 	}
 }
@@ -267,6 +329,8 @@ func formatArgs(args any) string {
 		return fmt.Sprintf("args={dir=%s}", dir)
 	case *tabJumpArgs:
 		return fmt.Sprintf("args={idx=%d}", a.idx)
+	case *menuOpenArgs:
+		return fmt.Sprintf("args={group=%s}", a.group)
 	case *popupToggleArgs:
 		s := fmt.Sprintf("args={name=%s", a.name)
 		if a.cmd != "" {

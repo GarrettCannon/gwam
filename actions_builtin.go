@@ -134,6 +134,16 @@ func init() {
 		Run:  func(c *Ctx) tea.Cmd { return c.M.actNextSession() },
 	})
 	registerAction(&Action{
+		ID: "session.prev", Label: "Previous session", Group: "sessions",
+		Help: "Switch to the previous session (wraps).",
+		Run:  func(c *Ctx) tea.Cmd { return c.M.actPrevSession() },
+	})
+	registerAction(&Action{
+		ID: "session.kill", Label: "Kill session", Group: "sessions",
+		Help: "Close the current session and all its tabs and panes. Quits gwam if it was the last session.",
+		Run:  func(c *Ctx) tea.Cmd { return c.M.actKillSession() },
+	})
+	registerAction(&Action{
 		ID: "session.last", Label: "Last session", Group: "sessions",
 		Help: "Flip to the previously active session.",
 		Run:  func(c *Ctx) tea.Cmd { return c.M.actLastSession() },
@@ -165,6 +175,21 @@ func init() {
 		},
 	})
 
+	// menu.open opens a which-key submenu of related actions. Its arg names
+	// the target group (a menu name shared with the submenu's bindings'
+	// Menu field); FlagOwnsInput hands keystroke routing to the overlay it
+	// pushes, so the follow keys resolve against the submenu rather than
+	// leaking to the active pty.
+	registerAction(&Action{
+		ID: "menu.open", Label: "Open menu",
+		Help:  "Open a which-key submenu of related actions.",
+		Flags: FlagOwnsInput,
+		Parse: parseMenuOpenArgs,
+		Run: func(c *Ctx) tea.Cmd {
+			return c.M.actOpenMenu(c.Args.(*menuOpenArgs).group)
+		},
+	})
+
 	registerAction(&Action{
 		ID: "mouse.toggle", Label: "Toggle mouse mode",
 		Help:   "Enable host-terminal mouse reporting so the wheel scrolls history. Breaks native click-drag selection — hold Option to bypass.",
@@ -179,6 +204,16 @@ func init() {
 }
 
 // ---- typed args ----
+
+type menuOpenArgs struct{ group string }
+
+func parseMenuOpenArgs(raw map[string]any) (any, error) {
+	g, ok := raw["group"].(string)
+	if !ok || g == "" {
+		return nil, fmt.Errorf("menu.open: missing group (the submenu name to open)")
+	}
+	return &menuOpenArgs{group: g}, nil
+}
 
 type tabJumpArgs struct{ idx int }
 
