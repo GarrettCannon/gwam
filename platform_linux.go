@@ -19,6 +19,20 @@ func setOPOST(fd int) {
 	}
 }
 
+// fionread is the FIONREAD ioctl request on linux (TIOCINQ for a tty).
+const fionread = 0x541B
+
+// bytesReadable reports how many bytes can be read from fd without blocking
+// (the tty's input queue). readPty uses it to drain a whole app redraw into one
+// message. Returns 0 on any ioctl error, which just ends the drain early.
+func bytesReadable(fd int) int {
+	n, err := unix.IoctlGetInt(fd, fionread)
+	if err != nil {
+		return 0
+	}
+	return n
+}
+
 // fgCmdOfPgid reads /proc/<pid>/comm — the kernel-maintained command name
 // (truncated to 15 chars by the kernel).
 func fgCmdOfPgid(pgid int) string {

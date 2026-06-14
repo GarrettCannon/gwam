@@ -450,12 +450,14 @@ func startInputPump(
 				if mlen, btn, mx, my, press := matchMouseSGR(chunk, i); mlen > 0 {
 					writePty(chunk[flush:i])
 					if !overlayOwnsInput.Load() {
-						switch {
-						case btn == 64:
-							p.Send(wheelMsg{up: true})
-						case btn == 65:
-							p.Send(wheelMsg{up: false})
-						case btn == 66, btn == 67:
+						// Classify on the button with the shift/meta/ctrl modifier
+						// bits (0x1c) masked off, so a modified wheel (e.g. ctrl+wheel
+						// = 64|16 = 80) still routes as a wheel. The full btn — with
+						// modifiers intact — is what gets forwarded, so the app sees them.
+						switch base := btn &^ 0x1c; {
+						case base == 64, base == 65:
+							p.Send(wheelMsg{btn: btn, x: mx, y: my})
+						case base == 66, base == 67:
 							// h-scroll — gwam doesn't have horizontal scrollback,
 							// and most CLI apps don't read it; forwarding the raw
 							// SGR would just echo as text into shells with ECHO on.
@@ -463,16 +465,12 @@ func startInputPump(
 							// button press: hand off to Update so it can map the
 							// click coords against the layout and either switch
 							// focus or forward the event to the target pane.
-							data := make([]byte, mlen)
-							copy(data, chunk[i:i+mlen])
-							p.Send(mousePressMsg{data: data, x: mx, y: my})
+							p.Send(mousePressMsg{btn: btn, x: mx, y: my})
 						default:
 							// release (or any non-press button event): Update
 							// either drops it (matching a swallowed press) or
 							// forwards to the active pane.
-							data := make([]byte, mlen)
-							copy(data, chunk[i:i+mlen])
-							p.Send(mouseReleaseMsg{data: data})
+							p.Send(mouseReleaseMsg{btn: btn, x: mx, y: my})
 						}
 					}
 					i += mlen

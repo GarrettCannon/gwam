@@ -14,8 +14,13 @@ import (
 
 var dbg io.Writer = io.Discard
 
+// dbgBody gates the per-frame "body" dump (a full screen render every frame —
+// gigabytes during a scroll). Off unless GWAM_DEBUG_BODY is set, so a normal
+// GWAM_DEBUG capture stays small (pty_in only).
+var dbgBody bool
+
 func dlog(tag string, b []byte) {
-	if dbg == io.Discard {
+	if dbg == io.Discard || (tag == "body" && !dbgBody) {
 		return
 	}
 	fmt.Fprintf(dbg, "[%s] %q\n", tag, b)
@@ -127,6 +132,7 @@ func run(sessionName, templateName string) {
 		f, err := os.Create("/tmp/gwam-debug.log")
 		if err == nil {
 			dbg = f
+			dbgBody = os.Getenv("GWAM_DEBUG_BODY") != ""
 			defer f.Close()
 		}
 	}

@@ -21,6 +21,22 @@ func setOPOST(fd int) {
 	}
 }
 
+// fionread is the FIONREAD ioctl request on darwin — x/sys/unix doesn't export
+// a named constant for it, so spell out the value (_IOR('f', 127, int)).
+const fionread = 0x4004667f
+
+// bytesReadable reports how many bytes can be read from fd without blocking
+// (the tty's input queue). readPty uses it to drain a whole app redraw — which
+// macOS hands over in ≤1KB Reads — into one message. Returns 0 on any ioctl
+// error, which just ends the drain early.
+func bytesReadable(fd int) int {
+	n, err := unix.IoctlGetInt(fd, fionread)
+	if err != nil {
+		return 0
+	}
+	return n
+}
+
 // fgCmdOfPgid returns the process name for the given pgid via sysctl.
 func fgCmdOfPgid(pgid int) string {
 	kp, err := unix.SysctlKinfoProc("kern.proc.pid", pgid)

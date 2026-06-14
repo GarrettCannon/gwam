@@ -20,6 +20,12 @@ type Pane struct {
 	pty           *os.File
 	vt            *vt.SafeEmulator
 	cursorVisible bool
+	// readBuf is reused across reads of this pane's pty so each ptyReadMsg
+	// doesn't allocate a fresh 64KB buffer. Only one readPty is in flight per
+	// pane at a time (rearmed after Update consumes the message), and the
+	// message's data is fully written to vt before the next read overwrites it,
+	// so the reuse is safe. See readPty in pty.go.
+	readBuf []byte
 	// cursorStyle/cursorSteady track the child's last DECSCUSR (CSI Ps SP q)
 	// request — the shape (block/underline/bar) and whether it's steady (not
 	// blinking). cursorStyleSet stays false until the child first asks for a
@@ -50,6 +56,21 @@ type Pane struct {
 	syncSnapshot             string
 	syncCursorX, syncCursorY int
 	syncStartedAt            time.Time
+
+	// syncCarry holds a trailing partial 2026 marker/query (e.g. "\x1b[?2026"
+	// with the h/l/$ byte not yet arrived) split across pty reads. It's
+	// prepended to the next read so the bytes.Index scans in writeWithSync /
+	// answerSyncQuery see the whole marker — without this, a marker straddling
+	// two reads is missed and the freeze never starts or never releases,
+	// leaving a torn/duplicated frame. See takeSyncCarry in pty.go.
+	syncCarry []byte
+
+	// syncProbed latches once we've answered the child's mode-2026 DECRQM probe
+	// (apps send it once at startup before enabling sync). After that we stop
+	// scanning every read for the query — and avoid replying to the query bytes
+	// if they later show up as ordinary output (e.g. cat-ing a file). See
+	// answerSyncQuery in pty.go.
+	syncProbed bool
 
 	// inOsc tracks whether we're inside an \x1b]…\x07 OSC payload across pty
 	// reads. vt's ansi parser treats 0x9C as the 8-bit ST terminator
@@ -304,7 +325,10 @@ type directKeyMsg struct{ b byte }
 // string the pump matched against the keymap's sequence index.
 type prefixFollowSeqMsg struct{ seq string }
 type directSeqMsg struct{ seq string }
-type wheelMsg struct{ up bool }
+type wheelMsg struct {
+	btn  int // raw SGR button: 64 (up) / 65 (down) plus any modifier bits; up == btn&1 == 0
+	x, y int // 1-indexed screen position of the cursor when the wheel turned
+}
 type snapMsg struct{}
 type pollMsg struct{}    // fast tick: refresh each pane's foreground process
 type cwdPollMsg struct{} // slow tick: refresh each pane's cwd (lsof)
@@ -317,18 +341,20 @@ type paneCwdMsg struct {
 	cwd  string
 }
 
-// mousePressMsg is a button-down SGR event with the original byte sequence
-// and the click position (1-indexed, as the terminal reports it).
+// mousePressMsg is a button-down SGR event: the button/modifier code and the
+// click position (1-indexed screen coords, as the terminal reports it). Update
+// re-encodes it with pane-local coordinates before forwarding to the pty.
 type mousePressMsg struct {
-	data []byte
+	btn  int
 	x, y int
 }
 
-// mouseReleaseMsg is a button-up SGR event with the original byte sequence.
-// We don't need coordinates — release routing is "to the currently active
-// pane, unless we swallowed the matching press."
+// mouseReleaseMsg is a button-up SGR event. We carry coords (unlike a bare
+// "release to the active pane") so the forwarded event lands on the same cell
+// the app saw the press at, after translating screen coords to pane-local.
 type mouseReleaseMsg struct {
-	data []byte
+	btn  int
+	x, y int
 }
 
 // switchSession records the outgoing session for session.last and moves to

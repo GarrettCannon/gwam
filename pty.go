@@ -24,15 +24,120 @@ var (
 	syncEnd   = []byte("\x1b[?2026l")
 )
 
+// nvim (and other apps) probe for synchronized-output support with a DECRQM
+// query — "CSI ? 2026 $ p" — at startup before enabling it. gwam supports 2026
+// at its own layer (writeWithSync double-buffers on the h/l markers), but the
+// emulator doesn't, and spawnPane discards the emulator's own query responses —
+// so without this the probe goes unanswered, the app assumes no support, and
+// never wraps its redraws in markers. The result is mid-frame tearing on scroll
+// (newly exposed lines briefly show stale content). The reply reports Ps=2
+// ("reset" — supported but currently off), which any value 1-4 satisfies.
+var (
+	syncQuery      = []byte("\x1b[?2026$p")
+	syncQueryReply = []byte("\x1b[?2026;2$y")
+)
+
+// answerSyncQuery replies to a mode-2026 DECRQM probe found in pty output, once.
+// Apps send the probe a single time at startup before enabling sync, so after
+// the first reply we latch and stop scanning — which also avoids replying to the
+// query bytes if they later turn up as ordinary output (e.g. cat-ing a file).
+func answerSyncQuery(p *Pane, data []byte) {
+	if p.syncProbed {
+		return
+	}
+	if bytes.Contains(data, syncQuery) {
+		p.pty.Write(syncQueryReply)
+		p.syncProbed = true
+	}
+}
+
+// syncSeqs are the 2026 sequences whose boundaries we detect by scanning. They
+// share the prefix "\x1b[?2026"; the longest is the 9-byte query.
+var syncSeqs = [][]byte{syncStart, syncEnd, syncQuery}
+
+// syncCarryMax is the most trailing bytes takeSyncCarry ever needs to hold: one
+// short of the longest syncSeq. Derived so it can't drift if syncSeqs changes.
+var syncCarryMax = func() int {
+	n := 0
+	for _, s := range syncSeqs {
+		if len(s)-1 > n {
+			n = len(s) - 1
+		}
+	}
+	return n
+}()
+
+// takeSyncCarry reattaches any partial 2026 marker held from the previous read
+// (p.syncCarry) to the front of data, then splits off a fresh trailing partial
+// to hold for the next read. The returned slice is what writeWithSync /
+// answerSyncQuery should process; the held bytes are NOT written to the
+// emulator this round — vt's parser is stateful, so writing them next read,
+// contiguous with the marker's remainder, keeps its byte stream intact too.
+func takeSyncCarry(p *Pane, data []byte) []byte {
+	if len(p.syncCarry) > 0 {
+		data = append(p.syncCarry, data...)
+		p.syncCarry = nil
+	}
+	// Longest proper prefix of any syncSeq that is a suffix of data — that's the
+	// fragment to carry. Check longest-first so we hold the most bytes possible.
+	maxN := syncCarryMax
+	if len(data) < maxN {
+		maxN = len(data)
+	}
+	for n := maxN; n > 0; n-- {
+		suf := data[len(data)-n:]
+		for _, full := range syncSeqs {
+			if n < len(full) && bytes.Equal(suf, full[:n]) {
+				p.syncCarry = append([]byte(nil), suf...)
+				return data[:len(data)-n]
+			}
+		}
+	}
+	return data
+}
+
 // If ?2026l never arrives the freeze auto-releases after this long, so a
 // buggy app can't wedge the pane forever. The check fires from renderPaneBody
-// (pollMsg ticks at 500ms guarantee a render even if no pty bytes arrive).
-const syncTimeout = 150 * time.Millisecond
+// (pollMsg ticks guarantee a render even if no pty bytes arrive).
+//
+// This is purely a safety net for a crashed/hung app, NOT a frame budget. Under
+// fast mouse scrolling nvim gets flooded with wheel events and its synchronized
+// redraws routinely take 30-150ms (occasionally more) — if the timeout fires
+// mid-frame we render the half-painted live grid, which is the duplicate/missing
+// line corruption. So it must comfortably exceed the slowest real frame; 1s does
+// that while still bailing out a genuinely wedged pane within a second. The
+// snapshot held until the real ?2026l arrives just looks like the scroll
+// pausing briefly, which is far better than a torn frame.
+const syncTimeout = time.Second
+
+// ptyReadBuf caps how much one ptyReadMsg can carry — large enough to hold a
+// whole app redraw drained from the tty queue (see readPty). Fewer, bigger
+// messages also mean a DECSET 2026 marker is less likely to straddle two reads
+// (see writeWithSync).
+const ptyReadBuf = 64 * 1024
 
 func readPty(p *Pane) tea.Cmd {
 	return func() tea.Msg {
-		buf := make([]byte, 4096)
-		n, err := p.pty.Read(buf)
+		// Reuse the pane's buffer across reads — only one read is in flight per
+		// pane and Update writes the message's data to vt before rearming the
+		// next read, so we never clobber bytes still in use.
+		buf := p.readBuf
+		n, err := p.pty.Read(buf) // block until the next batch starts arriving
+		// macOS hands pty output to each Read in ≤1KB slices, so an app's
+		// multi-KB redraw (an nvim scroll repaint is ~10KB) arrives as a train
+		// of 1KB chunks. Update renders once per message, so returning each
+		// chunk separately paints the frame in 1KB bands — the slow, jerky
+		// scroll. Drain whatever else is already queued into this one message so
+		// the repaint lands as a single render.
+		fd := int(p.pty.Fd())
+		for err == nil && n < len(buf) && bytesReadable(fd) > 0 {
+			m, e := p.pty.Read(buf[n:])
+			if m == 0 {
+				break // no progress despite a non-empty queue — avoid spinning
+			}
+			n += m
+			err = e
+		}
 		dlog("pty_in", buf[:n])
 		return ptyReadMsg{pane: p, data: buf[:n], err: err}
 	}
@@ -74,6 +179,7 @@ func spawnPane(rows, cols int, opts SpawnOpts) (*Pane, error) {
 		vt:            emu,
 		cursorVisible: true,
 		shellPID:      cmd.Process.Pid,
+		readBuf:       make([]byte, ptyReadBuf),
 	}
 
 	emu.SetCallbacks(vt.Callbacks{
@@ -206,13 +312,10 @@ func sanitizeOscC1(p *Pane, data []byte) []byte {
 // renderPaneBody / the cursor read, which prefer Pane.syncSnapshot while
 // frozen.
 //
-// Limitation: if a marker straddles two pty reads (split across ptyReadMsgs)
-// we miss the boundary and the freeze either doesn't start, doesn't release,
-// or releases via timeout. Real chunks from a localhost pty are 4096 bytes
-// and the markers are 8 bytes each, so the probability is sub-percent — but
-// not zero. If this turns up, buffer up to len(syncStart)-1 trailing bytes
-// of `data` whose suffix matches the prefix of either marker and prepend
-// them to the next call.
+// A marker that straddles two pty reads would be missed by bytes.Index here —
+// caller runs data through takeSyncCarry first, which holds a trailing partial
+// marker and prepends it to the next read, so writeWithSync always sees whole
+// markers.
 func writeWithSync(p *Pane, data []byte) {
 	for len(data) > 0 {
 		if !p.syncFrozen {
