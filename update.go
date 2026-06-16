@@ -177,29 +177,15 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, readPty(msg.pane)
 
 	case wheelMsg:
-		// On the alternate screen (nvim, htop, less, …) the app owns scrolling
-		// and gwam has no scrollback to drive — forward the wheel to the pane
-		// under the pointer as a pane-local SGR event (btn carries any modifier
-		// bits). Apps that haven't enabled mouse reporting just ignore it;
-		// without this the wheel was swallowed entirely, so nvim only scrolled
-		// when outer mouse reporting was off.
-		if hover, x, y, ok := m.paneAt(msg.x, msg.y); ok && hover.vt.IsAltScreen() {
-			// Backpressure: don't pile wheel events onto an app that's still
-			// painting the last scroll (its sync block is open). Forwarding
-			// faster than it redraws builds a multi-second backlog — the app
-			// stops sending its ?2026l, our freeze times out mid-frame, and we
-			// render the half-painted live grid (a torn frame). Skipping while
-			// frozen rate-limits us to the app's own frame cadence; the next
-			// notch forwards as soon as it releases.
-			if hover.syncFrozen {
-				return m, nil
-			}
+		// If the app under the pointer has mouse tracking on (nvim, htop, less
+		// --mouse), it owns the wheel — forward the notch as a pane-local SGR
+		// event (btn carries any modifier bits) and let it scroll itself. This
+		// mirrors tmux's mouse_any_flag rule.
+		if hover, x, y, ok := m.paneAt(msg.x, msg.y); ok && hover.mouseOn.Load() {
 			hover.pty.Write(sgrMouse(msg.btn, x, y, true))
 			return m, nil
 		}
-		// Otherwise drive the focused pane's scrollback. A focused alt-screen
-		// app whose pane isn't under the pointer gets nothing (matches the old
-		// behavior, where the out-of-pane forward was dropped).
+		// Otherwise drive the focused pane's own scrollback.
 		p := m.focusPane()
 		if p.vt.IsAltScreen() {
 			return m, nil

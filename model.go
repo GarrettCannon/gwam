@@ -20,6 +20,13 @@ type Pane struct {
 	pty           *os.File
 	vt            *vt.SafeEmulator
 	cursorVisible bool
+	// mouseOn is true while the child app has a mouse-tracking mode enabled
+	// (?1000/?1002/?1003). Maintained from the vt EnableMode/DisableMode
+	// callbacks (see spawnPane). The wheel handler forwards events to the app
+	// when this is set, and drives gwam's own scrollback when it isn't —
+	// matching tmux's mouse_any_flag rule. atomic.Bool because the callback may
+	// fire off the vt parser goroutine while Update reads it.
+	mouseOn atomic.Bool
 	// readBuf is reused across reads of this pane's pty so each ptyReadMsg
 	// doesn't allocate a fresh 64KB buffer. Only one readPty is in flight per
 	// pane at a time (rearmed after Update consumes the message), and the

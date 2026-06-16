@@ -8,10 +8,24 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/charmbracelet/x/vt"
 	"github.com/creack/pty"
 	"golang.org/x/sys/unix"
 )
+
+// isMouseTrackMode reports whether a DECSET private mode is one of the
+// mouse-tracking modes that make an app want wheel/click reports forwarded to
+// it. SGR encoding (?1006) and highlight tracking (?1001) are deliberately
+// excluded — the former is only an encoding, the latter doesn't drive wheels.
+func isMouseTrackMode(mode ansi.Mode) bool {
+	switch mode {
+	case ansi.ModeMouseX10, ansi.ModeMouseNormal,
+		ansi.ModeMouseButtonEvent, ansi.ModeMouseAnyEvent:
+		return true
+	}
+	return false
+}
 
 // DECSET 2026 "synchronized output" markers. Apps wrap a multi-frame redraw
 // in ?2026h … ?2026l to ask the host terminal to atomic-swap the screen at
@@ -199,6 +213,18 @@ func spawnPane(rows, cols int, opts SpawnOpts) (*Pane, error) {
 				p.cwd = u.Path
 			} else {
 				p.cwd = s
+			}
+		},
+		// Track mouse-tracking mode so the wheel handler knows whether to
+		// forward events to the app or drive gwam's scrollback (see update.go).
+		EnableMode: func(mode ansi.Mode) {
+			if isMouseTrackMode(mode) {
+				p.mouseOn.Store(true)
+			}
+		},
+		DisableMode: func(mode ansi.Mode) {
+			if isMouseTrackMode(mode) {
+				p.mouseOn.Store(false)
 			}
 		},
 	})
