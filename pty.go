@@ -41,15 +41,25 @@ var (
 // nvim (and other apps) probe for synchronized-output support with a DECRQM
 // query — "CSI ? 2026 $ p" — at startup before enabling it. gwam supports 2026
 // at its own layer (writeWithSync double-buffers on the h/l markers), but the
-// emulator doesn't, and spawnPane discards the emulator's own query responses —
-// so without this the probe goes unanswered, the app assumes no support, and
-// never wraps its redraws in markers. The result is mid-frame tearing on scroll
-// (newly exposed lines briefly show stale content). The reply reports Ps=2
-// ("reset" — supported but currently off), which any value 1-4 satisfies.
+// emulator doesn't: it answers the probe with Ps=0 ("not recognized"). spawnPane
+// forwards the emulator's query replies to the pty but strips that one (see
+// syncQueryEmuReply) and answerSyncQuery substitutes the reply below. Without
+// this the app assumes no support and never wraps its redraws in markers, which
+// causes mid-frame tearing on scroll (newly exposed lines briefly show stale
+// content). The reply reports Ps=2 ("reset" — supported but currently off),
+// which any value 1-4 satisfies.
 var (
 	syncQuery      = []byte("\x1b[?2026$p")
 	syncQueryReply = []byte("\x1b[?2026;2$y")
 )
+
+// syncQueryEmuReply is the emulator's own DECRQM answer for mode 2026: Ps=0,
+// "not recognized", since charmbracelet/x/vt doesn't implement synchronized
+// output. spawnPane's drain goroutine forwards the emulator's capability-query
+// replies to the pty, but strips this one — answerSyncQuery already gave the
+// authoritative Ps=2 reply, and a trailing "not recognized" would tell the app
+// 2026 is unsupported after we said it was.
+var syncQueryEmuReply = []byte("\x1b[?2026;0$y")
 
 // answerSyncQuery replies to a mode-2026 DECRQM probe found in pty output, once.
 // Apps send the probe a single time at startup before enabling sync, so after
@@ -229,14 +239,30 @@ func spawnPane(rows, cols int, opts SpawnOpts) (*Pane, error) {
 		},
 	})
 
-	// drain emulator-generated input (capability-query responses) and discard.
-	// the emulator buffers these by default; if nothing reads them it eventually
-	// blocks. we don't forward them anywhere — shells fall back to "unsupported"
-	// when probes go unanswered.
+	// The emulator answers terminal capability queries itself — Primary/Secondary
+	// Device Attributes (CSI c / CSI > c), cursor-position and status reports
+	// (DSR), DECRQM mode reports — by writing the replies to an input pipe that
+	// Read drains. Forward those replies back to the pty so the child program
+	// actually hears them; without this fish's startup DA1 probe ("\x1b[c") times
+	// out after 10s ("could not read response to Primary Device Attribute query")
+	// and other shells fall back to assuming a dumb terminal. The emulator buffers
+	// these by default, so something has to read them regardless or it blocks.
+	//
+	// One reply is stripped: the emulator reports mode 2026 as "not recognized"
+	// (syncQueryEmuReply), but answerSyncQuery already gave the authoritative
+	// "supported" reply — forwarding both would contradict it. Each emu.Read
+	// returns exactly one reply (vt writes each via a single WriteString to an
+	// io.Pipe, never coalesced into one read), so a per-read filter is enough.
 	go func() {
 		buf := make([]byte, 1024)
 		for {
-			if _, err := emu.Read(buf); err != nil {
+			n, err := emu.Read(buf)
+			if n > 0 {
+				if reply := bytes.ReplaceAll(buf[:n], syncQueryEmuReply, nil); len(reply) > 0 {
+					f.Write(reply)
+				}
+			}
+			if err != nil {
 				return
 			}
 		}
