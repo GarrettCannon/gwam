@@ -206,8 +206,8 @@ func indexEncodings(byteIdx map[byte]*Binding, seqIdx map[string]*Binding, bd *B
 	for _, e := range encs {
 		if len(e) == 1 {
 			b := e[0]
-			if direct && b == 0x01 {
-				return fmt.Errorf("key %s: conflicts with built-in Ctrl-A prefix", bd.Trigger.Key)
+			if direct && b == prefixByte {
+				return fmt.Errorf("key %s: conflicts with the %s prefix", bd.Trigger.Key, prefixKeyDef)
 			}
 			if _, dup := byteIdx[b]; dup {
 				return fmt.Errorf("duplicate %s binding for key %s", kind, bd.Trigger.Key)
@@ -301,6 +301,50 @@ func applyOverrides(defaults, overrides []BindingSpec) []BindingSpec {
 		out = append(out, s)
 	}
 	return out
+}
+
+// prefixKeyDef is the keystroke that arms prefix mode — Ctrl-A by default.
+// A user config may swap it for another ctrl chord via setPrefix.
+// prefixByte is its single legacy encoding (0x01 for Ctrl-A); prefixKitty
+// is the kitty CSI-u form the host terminal sends under progressive
+// enhancement (\x1b[97;5u for Ctrl-A). The input pump matches both forms
+// to detect the prefix, and indexEncodings reads prefixByte to reject a
+// direct binding that would shadow it. Set once at startup before the
+// stdin pump goroutine spawns, so the plain (non-atomic) reads are safe.
+var (
+	prefixKeyDef      = Key{Code: 'a', Mods: ModCtrl}
+	prefixByte   byte = 0x01
+	prefixKitty       = []byte("\x1b[97;5u")
+)
+
+// setPrefix swaps the prefix to the key named by spec (parsed by ParseKey).
+// Accepts any ctrl chord with a single-byte legacy encoding — ctrl-<letter>
+// (0x01..0x1a) and ctrl-space (0x00). These are the keys the pump can detect
+// as one byte (or its kitty CSI-u form) before the generic decoders run. ctrl
+// with other bases has no single-byte form (LegacyBytes rejects it, e.g.
+// ctrl-[ == Esc), and non-ctrl keys would shadow ordinary typing. Callers
+// rebuild the keymap afterward so the conflict check (indexEncodings) sees the
+// new byte.
+func setPrefix(spec string) error {
+	k, err := ParseKey(spec)
+	if err != nil {
+		return fmt.Errorf("prefix %q: %w", spec, err)
+	}
+	if k.Mods != ModCtrl {
+		return fmt.Errorf("prefix %q: must be a ctrl-<key> chord (e.g. ctrl-b, ctrl-space)", spec)
+	}
+	bs, ok := k.LegacyBytes()
+	if !ok || len(bs) != 1 {
+		return fmt.Errorf("prefix %q: no single-byte terminal encoding (try ctrl-<letter> or ctrl-space)", spec)
+	}
+	kitty, ok := k.kittyEncoding()
+	if !ok {
+		return fmt.Errorf("prefix %q: no kitty encoding", spec)
+	}
+	prefixKeyDef = k
+	prefixByte = bs[0]
+	prefixKitty = kitty
+	return nil
 }
 
 // defaultKeymap is the in-process keymap built at startup from

@@ -422,6 +422,28 @@ func (k Key) legacyEncodings() [][]byte {
 	return nil
 }
 
+// kittyEncoding returns the kitty keyboard-protocol CSI-u byte sequence a
+// terminal in progressive-enhancement mode emits for k — \x1b[<cp>;<mods>u,
+// where cp is the base key's lowercase Unicode codepoint and mods is the
+// xterm-style modifier parameter (1 + shift | alt<<1 | ctrl<<2). Only bases
+// with a stable codepoint are encodable: printable ASCII and space. Returns
+// (nil, false) otherwise (named multi-byte keys have their own CSI forms the
+// pump decodes separately). Used to detect a kitty-encoded prefix keystroke.
+func (k Key) kittyEncoding() ([]byte, bool) {
+	var cp int
+	switch {
+	case k.Code == KeySpace:
+		cp = ' '
+	case k.Code >= 'A' && k.Code <= 'Z':
+		cp = int(k.Code) + 32 // kitty reports the lowercase codepoint
+	case k.Code >= 0x20 && k.Code < 0x7f:
+		cp = int(k.Code)
+	default:
+		return nil, false
+	}
+	return fmt.Appendf(nil, "\x1b[%d;%du", cp, k.xtermMods()), true
+}
+
 // String returns the canonical text form of k. Modifier order is fixed
 // (ctrl-, alt-, shift-) so Key values that compare equal also stringify
 // equal — useful for config-check output and round-trip testing.

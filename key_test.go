@@ -100,3 +100,67 @@ func TestBuildKeymapMultiByte(t *testing.T) {
 		t.Errorf("MatchDirectSeq(F5): want nil, got %s", bd.Action.ID)
 	}
 }
+
+func TestSetPrefix(t *testing.T) {
+	// setPrefix mutates package-level prefix state; restore it so later tests
+	// (and the default keymap's conflict check) see Ctrl-A again.
+	savedKey, savedByte, savedKitty := prefixKeyDef, prefixByte, prefixKitty
+	t.Cleanup(func() { prefixKeyDef, prefixByte, prefixKitty = savedKey, savedByte, savedKitty })
+
+	if err := setPrefix("ctrl-b"); err != nil {
+		t.Fatalf("setPrefix(ctrl-b): %v", err)
+	}
+	if prefixByte != 0x02 {
+		t.Errorf("prefixByte = %#x, want 0x02", prefixByte)
+	}
+	if got := string(prefixKitty); got != "\x1b[98;5u" {
+		t.Errorf("prefixKitty = %q, want kitty ctrl-b", got)
+	}
+	if got := prefixKeyDef.String(); got != "ctrl-b" {
+		t.Errorf("prefixKeyDef = %q, want ctrl-b", got)
+	}
+
+	// Uppercase spelling resolves to the same single byte and lowercase kitty
+	// codepoint.
+	if err := setPrefix("C-B"); err != nil {
+		t.Fatalf("setPrefix(C-B): %v", err)
+	}
+	if prefixByte != 0x02 || string(prefixKitty) != "\x1b[98;5u" {
+		t.Errorf("setPrefix(C-B): got byte %#x kitty %q", prefixByte, prefixKitty)
+	}
+
+	// ctrl-space is the other single-byte ctrl key: legacy NUL, kitty cp 32.
+	if err := setPrefix("ctrl-space"); err != nil {
+		t.Fatalf("setPrefix(ctrl-space): %v", err)
+	}
+	if prefixByte != 0x00 {
+		t.Errorf("prefixByte = %#x, want 0x00", prefixByte)
+	}
+	if got := string(prefixKitty); got != "\x1b[32;5u" {
+		t.Errorf("prefixKitty = %q, want kitty ctrl-space", got)
+	}
+	if got := prefixKeyDef.String(); got != "ctrl-space" {
+		t.Errorf("prefixKeyDef = %q, want ctrl-space", got)
+	}
+
+	// Non-ctrl keys, ctrl with no single-byte form, and multi-modifier chords
+	// are all rejected.
+	for _, bad := range []string{"a", "space", "alt-b", "ctrl-up", "ctrl-1", "ctrl-[", "ctrl-alt-b"} {
+		if err := setPrefix(bad); err == nil {
+			t.Errorf("setPrefix(%q): want error, got nil", bad)
+		}
+	}
+
+	// With the prefix moved to ctrl-t, the built-in direct ctrl-t binding now
+	// shadows it and must fail the build; a direct ctrl-a is freed up.
+	if err := setPrefix("ctrl-t"); err != nil {
+		t.Fatalf("setPrefix(ctrl-t): %v", err)
+	}
+	if _, err := buildKeymap(defaultBindings); err == nil {
+		t.Error("buildKeymap with prefix=ctrl-t and direct ctrl-t: want conflict error, got nil")
+	}
+	freed := []BindingSpec{{Trigger: Trigger{Key: mustKey("ctrl-a"), Direct: true}, ActionID: "tab.next"}}
+	if _, err := buildKeymap(freed); err != nil {
+		t.Errorf("buildKeymap with direct ctrl-a (no longer the prefix): %v", err)
+	}
+}

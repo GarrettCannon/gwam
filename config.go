@@ -13,6 +13,10 @@ import (
 // carries binding overrides; future sections (style, custom actions, ...)
 // will hang off this struct.
 type Config struct {
+	// Prefix overrides the built-in Ctrl-A prefix. Must be a ctrl-<key>
+	// chord with a single-byte encoding — "ctrl-b" / "C-b" / "ctrl-space".
+	// Parsed by ParseKey. Empty keeps Ctrl-A.
+	Prefix   string          `toml:"prefix"`
 	Bindings []ConfigBinding `toml:"binding"`
 	// Menus maps a which-key submenu name to a display title, overriding the
 	// built-in menuTitles (e.g. menus.tabs = "+windows"). Names not listed
@@ -153,6 +157,14 @@ func applyUserConfig() error {
 	if cfg == nil {
 		return nil
 	}
+	// Resolve the prefix before any buildKeymap call below: indexEncodings
+	// reads prefixByte to reject a direct binding that would shadow the
+	// prefix, so the new value must be in place first.
+	if cfg.Prefix != "" {
+		if err := setPrefix(cfg.Prefix); err != nil {
+			return err
+		}
+	}
 	// The extra which-key back key applies independently of bindings.
 	if cfg.WhichKey.Back != "" {
 		k, err := ParseKey(cfg.WhichKey.Back)
@@ -173,9 +185,12 @@ func applyUserConfig() error {
 		menuTitles[name] = title
 	}
 	if len(cfg.Bindings) == 0 {
-		if len(cfg.Menus) > 0 {
-			// Titles changed but bindings didn't — rebuild so the default
-			// levels pick up the new titles.
+		// Titles changed but bindings didn't — rebuild so the default levels
+		// pick up the new titles. Also rebuild when only the prefix changed:
+		// the keymap is unaffected, but the rebuild re-runs the conflict check
+		// so a default direct binding that now collides with the prefix (e.g.
+		// prefix = ctrl-t vs the built-in direct ctrl-t) fails at startup.
+		if len(cfg.Menus) > 0 || cfg.Prefix != "" {
 			km, err := buildKeymap(defaultBindings)
 			if err != nil {
 				return err
@@ -211,6 +226,14 @@ func checkConfig(w io.Writer) error {
 	cfg, err := loadConfig()
 	if err != nil {
 		return err
+	}
+	// Apply the configured prefix so the listing header and the direct-binding
+	// conflict check below reflect it, matching what run() will use.
+	if cfg != nil && cfg.Prefix != "" {
+		if err := setPrefix(cfg.Prefix); err != nil {
+			return err
+		}
+		fmt.Fprintf(w, "prefix: %s\n", prefixKeyDef)
 	}
 	var specs []BindingSpec
 	switch {
@@ -295,7 +318,7 @@ func printBindings(w io.Writer, km *Keymap) {
 	for _, name := range km.menuOrder {
 		switch {
 		case name == "":
-			fmt.Fprintln(w, "  [root] (after prefix C-A)")
+			fmt.Fprintf(w, "  [root] (after prefix %s)\n", prefixKeyDef)
 		case leaderOf[name] != "":
 			fmt.Fprintf(w, "  [%s] (prefix %s)\n", menuTitle(name), leaderOf[name])
 		default:

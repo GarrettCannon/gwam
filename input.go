@@ -67,14 +67,18 @@ func startInputPump(
 				f.Write(b)
 			}
 		}
-		kittyCtrlA := []byte("\x1b[97;5u")
+		// The prefix is Ctrl-A by default but configurable to any other
+		// ctrl-<letter> (see setPrefix). Captured once here — both forms are
+		// fixed for the life of the pump, set before this goroutine spawns.
+		prefixLegacy := prefixByte
+		kittyPrefix := prefixKitty
 		matchPrefix := func(c []byte, i int) int {
-			if c[i] == 0x01 {
+			if c[i] == prefixLegacy {
 				return 1
 			}
-			if i+len(kittyCtrlA) <= len(c) &&
-				string(c[i:i+len(kittyCtrlA)]) == string(kittyCtrlA) {
-				return len(kittyCtrlA)
+			if i+len(kittyPrefix) <= len(c) &&
+				string(c[i:i+len(kittyPrefix)]) == string(kittyPrefix) {
+				return len(kittyPrefix)
 			}
 			return 0
 		}

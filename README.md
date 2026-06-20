@@ -55,7 +55,9 @@ Fields:
 
 ## Prefix and bindings
 
-The prefix is **Ctrl-A**. Bindings are organized as a [which-key]-style
+The prefix is **Ctrl-A** by default, configurable to any other single-byte
+ctrl chord (`ctrl-<letter>` or `ctrl-space`) via the `prefix` key in the
+config (see [Config](#config)). Bindings are organized as a [which-key]-style
 drill-down: press the prefix, then a **group leader** to open that group's
 submenu, then a key in the submenu to run an action. Group leaders and a few
 globals live at the root level:
@@ -120,6 +122,9 @@ you override or add bindings. The file is optional — without it, the
 defaults above apply.
 
 ```toml
+# change the prefix from Ctrl-A (a ctrl-<letter> or ctrl-space chord)
+prefix = "ctrl-space"
+
 # add a key inside the +panes submenu: prefix p v also splits vertically
 [[binding]]
 key    = "v"
@@ -222,8 +227,9 @@ how terminals send it — but pressing Esc and the base key in *very*
 quick succession can coalesce into one read and false-trigger. If you
 live in vim and want `alt-x`, know that failure mode exists.
 
-Ctrl-A is reserved as the prefix; binding it directly errors out with a
-conflict message.
+Whatever key serves as the prefix (Ctrl-A by default, or your `prefix`
+override) is reserved; binding it directly errors out with a conflict
+message.
 
 ### Action IDs
 
@@ -395,7 +401,8 @@ While scrolled:
 
 The stdin pump owns input routing. It:
 
-- Catches Ctrl-A (legacy `0x01` and kitty `\x1b[97;5u`) to arm the prefix.
+- Catches the prefix — Ctrl-A by default (legacy `0x01` and kitty
+  `\x1b[97;5u`), or the configured `ctrl-<letter>` — to arm prefix mode.
 - Matches multi-byte bound keys (arrows, F-keys, alt-chords) against the
   keymap's escape-sequence index — both as direct keystrokes and as
   prefix follow keys.
