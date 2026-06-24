@@ -142,6 +142,10 @@ func TestSetPrefix(t *testing.T) {
 	if got := prefixKeyDef.String(); got != "ctrl-space" {
 		t.Errorf("prefixKeyDef = %q, want ctrl-space", got)
 	}
+	// The hint chips/panels show this short label.
+	if got := prefixLabel(); got != "C-Space" {
+		t.Errorf("prefixLabel() = %q, want C-Space", got)
+	}
 
 	// Non-ctrl keys, ctrl with no single-byte form, and multi-modifier chords
 	// are all rejected.

@@ -108,9 +108,9 @@ func tabBarLayout(m *Model) (bar string, chipRects []chipRect) {
 	sessionStr := sessionChip.Render(s.name)
 	var prefixStr string
 	if m.prefix {
-		prefixStr = prefixChip.Render(" PREFIX C-A ")
+		prefixStr = prefixChip.Render(" PREFIX " + prefixLabel() + " ")
 	} else {
-		prefixStr = prefixChipIdle.Render(" prefix C-A ")
+		prefixStr = prefixChipIdle.Render(" prefix " + prefixLabel() + " ")
 	}
 	rightBar := tabsStr + " " + sessionStr + " " + prefixStr
 	var leading int
@@ -389,12 +389,30 @@ func renderPaneBody(p *Pane, w, h int) string {
 	return strings.Join(lines, "\n")
 }
 
+// prefixLabel renders the configured prefix in the short "C-A" / "C-Space"
+// style the status chips and cheatsheet header use. setPrefix guarantees the
+// prefix is a ctrl chord, so the modifier is always "C-"; the base is the
+// uppercased letter or a named key like Space.
+func prefixLabel() string {
+	k := prefixKeyDef
+	var base string
+	switch {
+	case k.Code == KeySpace:
+		base = "Space"
+	case k.Code >= 'a' && k.Code <= 'z':
+		base = string(rune(k.Code - 32))
+	default:
+		base = string(rune(k.Code))
+	}
+	return "C-" + base
+}
+
 // renderPrefixPanel builds the floating cheatsheet shown while the prefix is
 // armed. It renders the root which-key level: group leaders ("t → +tabs")
 // alongside any flat actions kept at root. Pressing a leader opens a
 // WhichKeyOverlay for that submenu, which renders with the same helper.
 func renderPrefixPanel(m *Model) string {
-	return renderMenuPanel(m, defaultKeymap.menus[""], "» PREFIX C-A", "esc to cancel")
+	return renderMenuPanel(m, defaultKeymap.menus[""], "» PREFIX "+prefixLabel(), "esc to cancel")
 }
 
 type menuLine struct {

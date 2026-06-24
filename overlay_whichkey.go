@@ -54,7 +54,7 @@ func (w *WhichKeyOverlay) Render(m *Model) string {
 	// Breadcrumb header: » PREFIX C-A › tabs › ... The root level has no title,
 	// so it contributes no segment — a stack of just [root] reads as the plain
 	// prefix panel.
-	crumb := "» PREFIX C-A"
+	crumb := "» PREFIX " + prefixLabel()
 	for _, lvl := range w.stack {
 		if lvl.title == "" {
 			continue
