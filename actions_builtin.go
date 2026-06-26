@@ -192,7 +192,7 @@ func init() {
 
 	registerAction(&Action{
 		ID: "mouse.toggle", Label: "Toggle mouse mode",
-		Help:   "Enable host-terminal mouse reporting so the wheel scrolls history. Breaks native click-drag selection — hold Option to bypass.",
+		Help:   "Toggle mouse capture. On by default — captured everywhere (gwam wheel-scrollback + click-to-focus even in plain shells), at the cost of native selection (hold Option to select). Toggle to auto: capture follows the focused app — on for apps that asked for the mouse (nvim scrolls its page), off otherwise so the terminal keeps native selection/scroll.",
 		Status: mouseStatus,
 		Run:    func(c *Ctx) tea.Cmd { return c.M.actToggleMouse() },
 	})

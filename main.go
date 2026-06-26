@@ -194,9 +194,14 @@ func run(sessionName, templateName string) {
 
 	activePty := &atomic.Pointer[os.File]{}
 	activePty.Store(tabs[0].active.pty)
+	// Mouse capture is ON by default (mouseForce, set on the Model below): the
+	// wheel and clicks are forwarded into gwam (pane focus, scrollback, tab-bar
+	// clicks) and into mouse-aware apps like nvim. Toggle it off (prefix → mouse)
+	// to hand the wheel/selection back to the host terminal. mouseOn (the live
+	// host-capture flag) starts false and is brought in line at startup by
+	// Init → applyMouseCapture; we only emit the disable sequence on exit if it
+	// was turned on.
 	mouseOn := &atomic.Bool{}
-	mouseOn.Store(true)
-	writeMouseMode(true)
 	inScroll := &atomic.Bool{}
 	overlayOwnsInput := &atomic.Bool{}
 	defer func() {
@@ -213,6 +218,7 @@ func run(sessionName, templateName string) {
 		mouseOn:          mouseOn,
 		inScroll:         inScroll,
 		overlayOwnsInput: overlayOwnsInput,
+		mouseForce:       true,
 	}
 
 	// don't let bubbletea read stdin — we passthrough raw to active pty

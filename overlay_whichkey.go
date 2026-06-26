@@ -37,7 +37,7 @@ func NewWhichKeyOverlay(stack ...*menuLevel) *WhichKeyOverlay {
 
 func (w *WhichKeyOverlay) cur() *menuLevel { return w.stack[len(w.stack)-1] }
 
-func (w *WhichKeyOverlay) Anchor() Anchor  { return AnchorTopRight{Y: tabBarH} }
+func (w *WhichKeyOverlay) Anchor() Anchor  { return AnchorBottomRight{} }
 func (w *WhichKeyOverlay) OwnsInput() bool { return true }
 
 // up steps back one level, returning whether the overlay should now close

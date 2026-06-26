@@ -132,7 +132,9 @@ func makeDefaultBindings() []BindingSpec {
 // it's non-empty rather than printing it, so the row width doesn't change as
 // the toggle flips).
 func mouseStatus(m *Model) string {
-	if m.mouseOn.Load() {
+	// Highlight the menu row for the user's manual force, not the transient
+	// auto-derived capture state.
+	if m.mouseForce {
 		return "on"
 	}
 	return ""
@@ -260,14 +262,16 @@ func (m *Model) actLastSession() tea.Cmd {
 }
 
 func (m *Model) actToggleMouse() tea.Cmd {
-	on := !m.mouseOn.Load()
-	m.mouseOn.Store(on)
-	writeMouseMode(on)
+	// Flip the manual override and re-derive capture. On (default) forces
+	// capture everywhere (gwam scrollback + clicks in plain shells too); off
+	// follows the focused app.
+	m.mouseForce = !m.mouseForce
+	m.applyMouseCapture(m.focusPane())
 	// Flash a toast so the user gets immediate feedback — the cheatsheet
 	// status suffix is only visible while the prefix overlay is up.
-	text := "mouse off"
-	if on {
-		text = "mouse on"
+	text := "mouse: auto (follows app)"
+	if m.mouseForce {
+		text = "mouse: forced on"
 	}
 	n := NewNoticeOverlay(text, 1500*time.Millisecond)
 	m.pushOverlay(n)

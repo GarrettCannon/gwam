@@ -23,8 +23,8 @@ type Pane struct {
 	// mouseOn is true while the child app has a mouse-tracking mode enabled
 	// (?1000/?1002/?1003). Maintained from the vt EnableMode/DisableMode
 	// callbacks (see spawnPane). The wheel handler forwards events to the app
-	// when this is set, and drives gwam's own scrollback when it isn't —
-	// matching tmux's mouse_any_flag rule. atomic.Bool because the callback may
+	// when this is set; when it isn't it drives gwam's own scrollback (main
+	// screen) or drops the wheel (alt screen). atomic.Bool because the callback may
 	// fire off the vt parser goroutine while Update reads it.
 	mouseOn atomic.Bool
 	// readBuf is reused across reads of this pane's pty so each ptyReadMsg
@@ -299,20 +299,42 @@ type Model struct {
 	// over the base and don't intercept input.
 	overlays []Overlay
 
-	// shared with the stdin pump goroutine. mouseOn flips DECSET ?1000/?1006
-	// on the outer tty; when on, wheel events arrive as SGR mouse sequences
-	// instead of arrow keys (alt-screen scroll translation), at the cost of
-	// breaking naive click-drag selection (hold ⌥/Option to select natively).
-	// overlayOwnsInput mirrors "any interactive overlay is up" for the pump.
+	// shared with the stdin pump goroutine. mouseOn is the live outer-tty mouse
+	// capture state — it flips DECSET ?1000/?1006 on the host terminal and gates
+	// the pump's SGR-mouse parsing. It's DERIVED, not a user setting: see
+	// applyMouseCapture. overlayOwnsInput mirrors "any interactive overlay is up"
+	// for the pump.
 	activePty        *atomic.Pointer[os.File]
 	mouseOn          *atomic.Bool
 	inScroll         *atomic.Bool
 	overlayOwnsInput *atomic.Bool
 
+	// mouseForce is the user's manual override (prefix → m). When true (default)
+	// capture is on everywhere — gwam's own wheel-scrollback and click-to-focus
+	// work in plain shells too, at the cost of native selection (hold ⌥/Option).
+	// When false, capture follows the focused app: on for apps that requested the
+	// mouse (nvim scrolls its page), off otherwise (the terminal keeps native
+	// selection and scroll). Only read/written from the Update goroutine.
+	mouseForce bool
+
 	// swallowMouseRelease is set when a press was consumed for pane focus
 	// switch; the matching release is dropped instead of forwarded so apps in
 	// the newly-focused pane don't see a release without a prior press.
 	swallowMouseRelease bool
+}
+
+// applyMouseCapture brings outer-tty mouse reporting in line with what's wanted:
+// captured when the user forced it on, or when the focused app requested the
+// mouse — so nvim's wheel scrolls the page exactly as it would in a normal
+// terminal, while a plain shell keeps native selection/scroll. focus is the
+// currently focused pane. Only emits the DECSET sequence on an actual change, so
+// it's cheap to call on every focus change and focused-pane pty read.
+func (m *Model) applyMouseCapture(focus *Pane) {
+	want := m.mouseForce || focus.mouseOn.Load()
+	if want != m.mouseOn.Load() {
+		m.mouseOn.Store(want)
+		writeMouseMode(want)
+	}
 }
 
 // ---- messages ----
@@ -390,6 +412,7 @@ func (m *Model) syncActive() {
 	p := m.focusPane()
 	m.activePty.Store(p.pty)
 	m.inScroll.Store(p.scrollOff > 0)
+	m.applyMouseCapture(p)
 }
 
 // closePane removes p from its tab. If the tab empties, it's removed too; if

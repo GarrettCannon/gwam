@@ -69,7 +69,7 @@ globals live at the root level:
 | s         | open the **+sessions** menu                         |
 | 1-9       | jump to tab N                                       |
 | !         | toggle the "scratch" popup (floating shell pane)    |
-| m         | toggle mouse mode (on by default) — flashes a toast |
+| m         | toggle mouse capture (on by default) to auto (follows the focused app) |
 | q         | quit                                                |
 | esc       | cancel the prefix                                   |
 
@@ -381,21 +381,34 @@ chip in the top-right area of the tab bar. New sessions are named `s1`,
 
 Exiting the last tab of the last session quits gwam (tmux-style cascade).
 
-## Scrollback
+## Mouse and scrollback
 
-Mouse wheel scrolls the active tab's history. We rely on enabling
-xterm SGR mouse reporting (DECSET ?1000 + ?1006) so the host terminal
-emits actual mouse events instead of converting wheel into arrow keys —
-that's why `mouse mode` exists as a toggle. Cost: while it's on, plain
-click-and-drag text selection is hijacked; hold Option (macOS) to fall
-back to native selection.
+Mouse capture is **on by default** — gwam claims the wheel and clicks
+everywhere via xterm SGR mouse reporting (DECSET ?1000 + ?1006), so its own
+wheel-scrollback, click-to-focus, tab-chip clicks, and divider drags work in
+plain shells too. The wheel routes to the pane under the pointer:
 
-While scrolled:
+- an app that tracks the mouse (nvim with `mouse=a`, htop, lazygit, `less
+  --mouse`) gets the wheel forwarded as a real SGR mouse event, so it scrolls
+  its own page — exactly as on a normal terminal, alt screen included;
+- a main-screen pane (a plain shell) scrolls gwam's own history;
+- an alt-screen app that didn't ask for the mouse owns its viewport and has no
+  scrollback we can drive, so the wheel is dropped — gwam never synthesizes
+  arrow keys, which the app might read as cursor moves instead of scrolling.
+
+Clicks focus panes and tab chips, dividers drag to resize. The cost of capture
+is that plain click-and-drag selection is hijacked — hold Option (macOS) for
+native selection.
+
+`prefix m` toggles capture to **auto**, where it follows the focused app
+instead: off for a plain shell or a TUI that doesn't ask for the mouse (the
+host terminal keeps native selection and scrolling), on only while an app that
+requested the mouse is focused.
+
+While scrolled (gwam's own history view):
 
 - An orange `SCROLL N/M` chip appears in the tab bar.
 - Any keystroke snaps back to live.
-- Non-wheel mouse events (clicks, drags) still forward to the inner pty,
-  so vim/less mouse keeps working.
 
 ## Input handling
 

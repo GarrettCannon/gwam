@@ -82,9 +82,11 @@ func (m *Model) popupRect(pu *Popup) Rect {
 	if x < 0 {
 		x = 0
 	}
-	y := tabBarH + (m.bodyHeight()-h)/2
-	if y < tabBarH {
-		y = tabBarH
+	// Center within the body region, which spans rows [0, bodyHeight) above the
+	// bottom tab bar.
+	y := (m.bodyHeight() - h) / 2
+	if y < 0 {
+		y = 0
 	}
 	return Rect{X: x, Y: y, W: w, H: h}
 }

@@ -56,8 +56,7 @@ func (AnchorCenter) Place(W, H, w, h int) (x, y int) {
 }
 
 // AnchorTopRight pins the overlay's right edge to the screen's right edge
-// and its top edge to row Y. Used by the prefix cheatsheet (Y=1, under the
-// tab bar) when it migrates onto the stack.
+// and its top edge to row Y. Used by toast notices (Y=0).
 type AnchorTopRight struct{ Y int }
 
 func (a AnchorTopRight) Place(W, H, w, h int) (x, y int) {
@@ -66,6 +65,24 @@ func (a AnchorTopRight) Place(W, H, w, h int) (x, y int) {
 		x = 0
 	}
 	return x, a.Y
+}
+
+// AnchorBottomRight pins the overlay's right edge to the screen's right edge
+// and its bottom edge just above the tab bar (the final row). Used by the
+// which-key cheatsheet so it sits next to the tab bar, which lives at the
+// bottom. Clamped to row 0 so an overlong panel still starts on screen.
+type AnchorBottomRight struct{}
+
+func (AnchorBottomRight) Place(W, H, w, h int) (x, y int) {
+	x = W - w
+	if x < 0 {
+		x = 0
+	}
+	y = H - tabBarH - h
+	if y < 0 {
+		y = 0
+	}
+	return x, y
 }
 
 // AnchorFractionalY centers horizontally and places the overlay's top edge at

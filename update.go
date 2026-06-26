@@ -6,6 +6,9 @@ import (
 	tea "charm.land/bubbletea/v2"
 )
 
+// scrollStep is how many lines one wheel notch moves gwam's own scrollback.
+const scrollStep = 3
+
 // sgrMouse builds an SGR mouse report — ESC [ < btn ; x ; y (M|m) — with x,y
 // as 1-indexed terminal coordinates. press selects the M (down) / m (up) final
 // byte. Wheel events are reported as presses with btn 64 (up) / 65 (down).
@@ -35,7 +38,7 @@ func (m *Model) paneContentRect(p *Pane) (x0, y0, w, h int, ok bool) {
 	if !ok {
 		return 0, 0, 0, 0, false
 	}
-	return r.X, r.Y + tabBarH, r.W, r.H, true
+	return r.X, r.Y, r.W, r.H, true
 }
 
 // paneLocalMouse maps 1-indexed screen coordinates to 1-indexed coordinates
@@ -75,9 +78,9 @@ func (m *Model) paneAt(sx, sy int) (*Pane, int, int, bool) {
 		}
 		return nil, 0, 0, false
 	}
-	bx, by := sx-1, sy-1-tabBarH
-	if by < 0 {
-		return nil, 0, 0, false // tab bar
+	bx, by := sx-1, sy-1
+	if by >= m.bodyHeight() {
+		return nil, 0, 0, false // tab bar (bottom row)
 	}
 	rects, _ := m.curTab().geometry(m.w, m.bodyHeight())
 	for pane, r := range rects {
@@ -108,6 +111,9 @@ func clampInt(v, lo, hi int) int {
 }
 
 func (m *Model) Init() tea.Cmd {
+	// Bring host mouse capture in line with the initial state (on by default via
+	// mouseForce) so the wheel/clicks are forwarded from the first frame.
+	m.applyMouseCapture(m.focusPane())
 	// Kick off the read loop for every initial pane — once a ptyReadMsg
 	// arrives, Update rearms readPty(pane) itself.
 	cmds := []tea.Cmd{pollCmd(), cwdPollCmd()}
@@ -170,6 +176,13 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				answerSyncQuery(msg.pane, data)
 				writeWithSync(msg.pane, sanitizeOscC1(msg.pane, data))
 			}
+			// The bytes may have flipped the app's mouse mode (nvim enabling
+			// ?1002 on startup, or disabling it on exit). If they were for the
+			// focused pane, bring outer capture in line so the wheel forwards
+			// (page scroll) or releases back to native.
+			if p := m.focusPane(); p == msg.pane {
+				m.applyMouseCapture(p)
+			}
 		}
 		if msg.err != nil {
 			return m.closePane(msg.pane)
@@ -177,34 +190,38 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, readPty(msg.pane)
 
 	case wheelMsg:
-		// If the app under the pointer has mouse tracking on (nvim, htop, less
-		// --mouse), it owns the wheel — forward the notch as a pane-local SGR
-		// event (btn carries any modifier bits) and let it scroll itself. This
-		// mirrors tmux's mouse_any_flag rule.
-		if hover, x, y, ok := m.paneAt(msg.x, msg.y); ok && hover.mouseOn.Load() {
+		// Route the wheel to the pane under the pointer, not the focused pane —
+		// a real terminal scrolls what's under the cursor.
+		hover, x, y, ok := m.paneAt(msg.x, msg.y)
+		if !ok {
+			return m, nil // tab bar or inter-pane gap
+		}
+		if hover.mouseOn.Load() {
+			// The app is tracking the mouse (nvim, htop, less --mouse): forward
+			// the notch as a pane-local SGR event (btn keeps any modifier bits)
+			// so it scrolls itself — a direct mouse input, exactly as on a real
+			// terminal. Works the same whether or not it's on the alt screen.
 			hover.pty.Write(sgrMouse(msg.btn, x, y, true))
 			return m, nil
 		}
-		// Otherwise drive the focused pane's own scrollback.
-		p := m.focusPane()
-		if p.vt.IsAltScreen() {
+		if hover.vt.IsAltScreen() {
+			// Alt-screen app that didn't ask for the mouse: it owns its viewport
+			// and exposes no scrollback we can drive, so drop the wheel — like a
+			// real terminal with alternate-scroll off. We deliberately don't
+			// synthesize arrow keys: the app may read them as cursor moves, not
+			// scrolling.
 			return m, nil
 		}
-		up := msg.btn&1 == 0
-		max := p.vt.Scrollback().Len()
-		step := 3
-		if up {
-			p.scrollOff += step
-			if p.scrollOff > max {
-				p.scrollOff = max
-			}
+		// Main-screen pane without mouse tracking: drive gwam's own scrollback.
+		sbLen := hover.vt.Scrollback().Len()
+		if msg.btn&1 == 0 { // wheel up
+			hover.scrollOff = min(hover.scrollOff+scrollStep, sbLen)
 		} else {
-			p.scrollOff -= step
-			if p.scrollOff < 0 {
-				p.scrollOff = 0
-			}
+			hover.scrollOff = max(hover.scrollOff-scrollStep, 0)
 		}
-		m.inScroll.Store(p.scrollOff > 0)
+		if hover == m.focusPane() {
+			m.inScroll.Store(hover.scrollOff > 0)
+		}
 		return m, nil
 
 	case snapMsg:
@@ -263,12 +280,12 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
-		// SGR coords are 1-indexed; the body starts below the tab bar.
+		// SGR coords are 1-indexed; the body occupies the rows above the tab bar.
 		bx := msg.x - 1
-		by := msg.y - 1 - tabBarH
-		if by < 0 {
-			// Click landed on the tab bar. Map x against the chip rects
-			// produced by tabBarLayout — same function the renderer uses
+		by := msg.y - 1
+		if by >= m.bodyHeight() {
+			// Click landed on the tab bar (bottom row). Map x against the chip
+			// rects produced by tabBarLayout — same function the renderer uses
 			// so the rects always agree.
 			_, chips := tabBarLayout(m)
 			for i, r := range chips {

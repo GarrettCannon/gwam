@@ -46,12 +46,12 @@ type LogSearchOverlay struct {
 func (o *LogSearchOverlay) Anchor() Anchor  { return AnchorBody{} }
 func (o *LogSearchOverlay) OwnsInput() bool { return true }
 
-// AnchorBody pins an overlay to the full body region, just under the tab bar.
-// The overlay itself renders at (m.w, bodyHeight), so it fully covers the
-// panes behind it.
+// AnchorBody pins an overlay to the full body region, which starts at the top
+// of the screen (the tab bar is on the bottom row). The overlay itself renders
+// at (m.w, bodyHeight), so it fully covers the panes behind it.
 type AnchorBody struct{}
 
-func (AnchorBody) Place(W, H, w, h int) (x, y int) { return 0, tabBarH }
+func (AnchorBody) Place(W, H, w, h int) (x, y int) { return 0, 0 }
 
 // ---- buffer plumbing ----
 

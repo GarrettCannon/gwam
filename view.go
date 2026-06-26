@@ -8,7 +8,22 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	uv "github.com/charmbracelet/ultraviolet"
+	"github.com/charmbracelet/x/ansi"
 )
+
+// bufScreen adapts a *uv.Buffer to the uv.Screen interface that
+// StyledString.Draw needs — Buffer has everything except WidthMethod. We use
+// WcWidth, matching both the vt emulator's default and bubbletea's cell buffer.
+type bufScreen struct{ *uv.Buffer }
+
+func (bufScreen) WidthMethod() uv.WidthMethod { return ansi.WcWidth }
+
+// draw composites a styled string block into buf with its top-left at (x, y),
+// clipped to the area (x, y, w, h). StyledString.Draw clears the area first, so a
+// block fully overwrites whatever it covers — opaque-panel semantics.
+func draw(buf *uv.Buffer, s string, x, y, w, h int) {
+	uv.NewStyledString(s).Draw(bufScreen{buf}, uv.Rect(x, y, w, h))
+}
 
 var (
 	tabIdle = lipgloss.NewStyle().
@@ -70,10 +85,16 @@ var (
 // chrome math — body height, mouse-coordinate mapping, cursor placement,
 // overlay anchoring — derives from this one constant so adding a status
 // line later is a single-site change.
+//
+// The tab bar lives at the BOTTOM, below the pane body: panes occupy screen
+// rows [0, bodyHeight) and the bar sits on the final row. Keeping panes at the
+// top-left origin (0,0) makes pane geometry, cursor, and mouse math offset-free
+// (no +tabBarH anywhere) and sets up a future single-pane passthrough fast path.
 const tabBarH = 1
 
-// bodyHeight is the number of rows below the tab bar available to panes.
-// This is the only correct height to spawn or resize a pane against.
+// bodyHeight is the number of rows above the tab bar available to panes. This
+// is the only correct height to spawn or resize a pane against, and — since the
+// body starts at row 0 — it is also the screen row the tab bar occupies.
 func (m *Model) bodyHeight() int {
 	h := m.h - tabBarH
 	if h < 1 {
@@ -152,46 +173,50 @@ func (m *Model) View() tea.View {
 
 	inner := m.bodyHeight()
 	rects, divs := t.geometry(m.w, inner)
-	body := renderBody(rects, divs, m.w, inner, t.active)
-	base := tabBar + "\n" + body
 
-	// Session popup floats over the body, below the overlay stack (so a
-	// picker or rename opened while it's up still renders on top) and
-	// below the prefix cheatsheet.
-	composed := base
+	// One full-screen cell buffer. Everything composites into it, then renders
+	// once: pane bodies + dividers fill rows [0, inner); the tab bar takes the
+	// bottom row; floating chrome (popup, overlays, prefix cheatsheet) draws on
+	// top. This replaces the old chain of whole-screen string recompositions.
+	buf := uv.NewBuffer(m.w, m.h)
+	renderBodyInto(buf, rects, divs, t.active)
+	draw(buf, tabBar, 0, inner, m.w, tabBarH)
+
+	// Session popup floats over the body, below the overlay stack (so a picker or
+	// rename opened while it's up still renders on top) and below the prefix
+	// cheatsheet.
 	pu := m.visiblePopup()
 	if pu != nil {
 		r := m.popupRect(pu)
-		composed = composeOverlay(composed, renderPopup(pu, r), r.X, r.Y)
+		drawPanel(buf, renderPopup(pu, r), r.X, r.Y)
 	}
-	// Overlay stack: bottom→top, each composed on top of the previous.
-	// Each overlay's Render returns a styled block; Anchor.Place sizes it
-	// against (m.w, m.h) using the block's own width/height.
+	// Overlay stack: bottom→top, each drawn over the previous. Each overlay's
+	// Render returns a styled block; Anchor.Place sizes it against (m.w, m.h)
+	// using the block's own width/height.
 	for _, ov := range m.overlays {
 		panel := ov.Render(m)
 		x, y := ov.Anchor().Place(m.w, m.h, lipgloss.Width(panel), lipgloss.Height(panel))
-		composed = composeOverlay(composed, panel, x, y)
+		drawPanel(buf, panel, x, y)
 	}
-	// Prefix cheatsheet sits on top of any overlays — it's a mode-driven
-	// visual, not a popup. align the panel's right edge with the PREFIX
-	// chip's right edge so the two visually anchor to the same column.
+	// Prefix cheatsheet sits on top of any overlays — it's a mode-driven visual,
+	// not a popup. Bottom-right, just above the tab bar (the same place the
+	// which-key drill-down anchors), so the panel grows up from next to the
+	// PREFIX chip rather than dropping from the top.
 	if m.prefix {
 		panel := renderPrefixPanel(m)
-		px := m.w - lipgloss.Width(panel)
-		if px < 0 {
-			px = 0
-		}
-		composed = composeOverlay(composed, panel, px, tabBarH)
+		px, py := AnchorBottomRight{}.Place(m.w, m.h, lipgloss.Width(panel), lipgloss.Height(panel))
+		drawPanel(buf, panel, px, py)
 	}
 
-	v := tea.NewView(composed)
+	v := tea.NewView(buf.Render())
 	v.AltScreen = true
 
 	// surface the focused pane's pty cursor at its absolute coordinates:
 	// the pane's on-screen origin plus the emulator's cursor offset. The
 	// focused pane is the visible popup's if one is up (origin = popup
-	// rect + 1 for the border), else the active tab pane (origin = body
-	// rect + tabBarH). when the shell hides the cursor (DECTCEM off),
+	// rect + 1 for the border), else the active tab pane (origin = the body
+	// rect itself, since the body starts at row 0). when the shell hides the
+	// cursor (DECTCEM off),
 	// we're scrolled into history, or an interactive overlay/prefix owns
 	// input, leave v.Cursor nil — but give a CursorProvider overlay a
 	// chance to paint its own cursor (top-down so the topmost wins).
@@ -203,7 +228,7 @@ func (m *Model) View() tea.View {
 		ox, oy, haveOrigin = r.X+1, r.Y+1, true
 	} else if r, ok := rects[p]; ok {
 		c := contentRect(r, divs)
-		ox, oy, haveOrigin = c.X, c.Y+tabBarH, true
+		ox, oy, haveOrigin = c.X, c.Y, true
 	}
 	if haveOrigin && p.cursorVisible && p.scrollOff == 0 && !m.prefix && m.topInteractiveOverlay() == nil {
 		px, py := paneCursorPos(p)
@@ -244,23 +269,15 @@ func (m *Model) View() tea.View {
 	return v
 }
 
-// renderBody composites the body area: a blank base of `inner` rows × w cols,
-// each pane's content layered at its rect, dividers between siblings as
-// further layers. rects and divs come from the same layoutGeometry walk.
-// Divider cells abutting another divider render as junctions (├ ┤ ┬ ┴ ┼),
-// and cells bordering the active pane's rect render in the focus color so
-// the focused pane reads at a glance.
-func renderBody(rects map[*Pane]Rect, divs []dividerSpec, w, inner int, active *Pane) string {
-	// Base: solid blank canvas so the compositor's output has exact dimensions.
-	blankRow := strings.Repeat(" ", w)
-	baseRows := make([]string, inner)
-	for i := range baseRows {
-		baseRows[i] = blankRow
-	}
-	baseStr := strings.Join(baseRows, "\n")
-
-	layers := []*lipgloss.Layer{lipgloss.NewLayer(baseStr).X(0).Y(0).Z(0)}
-
+// renderBodyInto composites the body area — each pane's content at its rect, with
+// dividers between siblings — directly into the shared full-screen cell buffer.
+// rects and divs come from the same layoutGeometry walk. Because the body starts
+// at screen row 0 (the tab bar is on the bottom), a pane's body-space rect maps
+// straight to buffer coordinates with no offset. Divider cells abutting another
+// divider render as junctions (├ ┤ ┬ ┴ ┼); cells bordering the active pane's rect
+// render in the focus color so the focused pane reads at a glance. Dividers are
+// drawn before pane bodies so pane content overdraws any stray junction cells.
+func renderBodyInto(buf *uv.Buffer, rects map[*Pane]Rect, divs []dividerSpec, active *Pane) {
 	arms := dividerArms(divs)
 	activeRect, hasActive := rects[active]
 	// hot reports whether a divider cell runs alongside the active pane — the
@@ -284,9 +301,9 @@ func renderBody(rects map[*Pane]Rect, divs []dividerSpec, w, inner int, active *
 		return paneDivider
 	}
 
-	// Dividers first (Z=1) so pane content (Z=2) overdraws any stray join cells.
 	for _, d := range divs {
 		var s string
+		var aw, ah int
 		if d.vertical {
 			// One cell per row; each row carries its own style.
 			rows := make([]string, d.length)
@@ -295,6 +312,7 @@ func renderBody(rects map[*Pane]Rect, divs []dividerSpec, w, inner int, active *
 				rows[i] = style(hot(x, y)).Render(string(dividerRune(arms[cellPos{x, y}])))
 			}
 			s = strings.Join(rows, "\n")
+			aw, ah = 1, d.length
 		} else {
 			// Group contiguous same-style cells into runs so a span renders
 			// as a handful of styled segments, not one SGR per cell.
@@ -319,18 +337,33 @@ func renderBody(rects map[*Pane]Rect, divs []dividerSpec, w, inner int, active *
 			}
 			flush(d.length)
 			s = b.String()
+			aw, ah = d.length, 1
 		}
-		layers = append(layers, lipgloss.NewLayer(s).X(d.x).Y(d.y).Z(1))
+		draw(buf, s, d.x, d.y, aw, ah)
 	}
 
-	// Pane bodies.
 	for pane, r := range rects {
 		c := contentRect(r, divs)
 		body := renderPaneBody(pane, c.W, c.H)
-		layers = append(layers, lipgloss.NewLayer(body).X(c.X).Y(c.Y).Z(2))
+		draw(buf, body, c.X, c.Y, c.W, c.H)
 	}
+}
 
-	return lipgloss.NewCompositor(layers...).Render()
+// renderBody composites the body into a fresh w×inner cell buffer and returns it
+// as a styled string. View draws the body straight into the full-screen buffer via
+// renderBodyInto; this string form is for tests and standalone body renders.
+func renderBody(rects map[*Pane]Rect, divs []dividerSpec, w, inner int, active *Pane) string {
+	buf := uv.NewBuffer(w, inner)
+	renderBodyInto(buf, rects, divs, active)
+	return buf.Render()
+}
+
+// drawPanel composites a styled-string block onto buf with its top-left at (x, y),
+// sized to the block's own width/height and clipped to the buffer. This replaces
+// the old string-based composeOverlay: each panel is drawn straight into the
+// shared cell buffer instead of re-parsing the whole screen per overlay.
+func drawPanel(buf *uv.Buffer, panel string, x, y int) {
+	draw(buf, panel, x, y, lipgloss.Width(panel), lipgloss.Height(panel))
 }
 
 // paneRenderSource returns the bytes renderPaneBody should treat as the
@@ -555,15 +588,6 @@ func collapseKeys(keys []Key) string {
 		parts[i] = k.String()
 	}
 	return strings.Join(parts, "/")
-}
-
-// composeOverlay stacks `panel` over `base` at (x, y) with the panel on top.
-// All overlays use this so Z-ordering, layer construction, and the base
-// layer's anchor live in one place.
-func composeOverlay(base, panel string, x, y int) string {
-	baseLayer := lipgloss.NewLayer(base).X(0).Y(0).Z(0)
-	panelLayer := lipgloss.NewLayer(panel).X(x).Y(y).Z(1)
-	return lipgloss.NewCompositor(baseLayer, panelLayer).Render()
 }
 
 // renderScrollback paints `inner` rows of the viewport for a single pane,

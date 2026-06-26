@@ -41,7 +41,7 @@ func (n *NoticeOverlay) WithStyle(s lipgloss.Style) *NoticeOverlay {
 	return n
 }
 
-func (n *NoticeOverlay) Anchor() Anchor  { return AnchorTopRight{Y: tabBarH} }
+func (n *NoticeOverlay) Anchor() Anchor  { return AnchorTopRight{Y: 0} }
 func (n *NoticeOverlay) OwnsInput() bool { return false }
 
 // HandleKey is unreachable in practice — the dispatcher only delivers to
